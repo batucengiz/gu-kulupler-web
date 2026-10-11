@@ -453,9 +453,7 @@ SHEETS['SHT-05'] = {
       >
         <div className="col gap16 pb16">
           <div className="row gap12">
-            <span className="emblem is-sm">
-              <Icon name={club.iconName} size={20} />
-            </span>
+            <ClubEmblem club={club} cls="is-sm" size={20} />
             <div className="flex1">
               <div className="t-title-s">{club.name}</div>
               <div className="t-caption">

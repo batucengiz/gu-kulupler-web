@@ -1267,13 +1267,10 @@ S['AUT-05'] = {
               </>
             ) : null}
             {f.step === 3
-              ? [
-                  <div key="h" className="row between">
+              ? <>{<div key="h" className="row between">
                     <h1 className="t-title-l">{t('auth.setup.interestTitle')}</h1>
                     <span className="t-label-l tnum c-muted">{f.interests.length}/5</span>
-                  </div>,
-                  <p key="d" className="t-body-m c-sec">{t('auth.setup.interestDesc')}</p>,
-                  <div key="c" className="row wrap gap8">
+                  </div>}{<p key="d" className="t-body-m c-sec">{t('auth.setup.interestDesc')}</p>}{<div key="c" className="row wrap gap8">
                     {INTERESTS.map((i) => (
                       <Chip
                         key={i.id}
@@ -1283,14 +1280,12 @@ S['AUT-05'] = {
                         onClick={() => toggle(i.id)}
                       />
                     ))}
-                  </div>,
-                  f.errors.interests ? (
+                  </div>}{f.errors.interests ? (
                     <div key="e" className="field-help is-error" role="alert">
                       <Icon name="triangle-alert" size={14} />
                       <span>{f.errors.interests}</span>
                     </div>
-                  ) : null,
-                ]
+                  ) : null}</>
               : null}
           </div>
         </Scroll>

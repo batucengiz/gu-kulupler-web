@@ -5,11 +5,17 @@ import path from 'node:path';
 const proto = process.argv[2] || '/mnt/project-files/gu_kulupler/design/prototype/app';
 const iconsDir = new URL('../node_modules/lucide/dist/esm/icons/', import.meta.url);
 const available = new Set(fs.readdirSync(iconsDir).filter((f) => f.endsWith('.js')).map((f) => f.slice(0, -3)));
-const ALIASES = { 'check-circle': 'circle-check', 'x-circle': 'circle-x', 'alert-triangle': 'triangle-alert', 'help-circle': 'circle-help', unlock: 'lock-open', loader: 'loader-circle', 'loader-2': 'loader-circle', 'bar-chart-3': 'chart-column', 'pie-chart': 'chart-pie', 'line-chart': 'chart-line', 'code-2': 'code-xml' };
+const ALIASES = { 'check-circle': 'circle-check', 'x-circle': 'circle-x', 'alert-triangle': 'triangle-alert', 'help-circle': 'circle-help', unlock: 'lock-open', loader: 'loader-circle', 'loader-2': 'loader-circle', 'bar-chart-3': 'chart-column', 'pie-chart': 'chart-pie', 'line-chart': 'chart-line', 'code-2': 'code-xml', 'more-vertical': 'ellipsis-vertical', 'more-horizontal': 'ellipsis', 'edit': 'pencil', 'edit-2': 'pen', 'trash': 'trash-2', 'settings-2': 'settings-2' };
 const names = new Set();
 const files = ['icons.js', 'ui.js', 'cards.js', 'shell.js', 'art.js', 'screens-auth.js', 'screens-clubs.js', 'screens-events.js', 'screens-manage.js', 'screens-profile.js', 'screens-admin.js', 'sheets.js', 'dialogs.js', 'seed.js', 'core.js'];
 for (const f of files) {
   const txt = fs.readFileSync(path.join(proto, f), 'utf8');
+  for (const m of txt.matchAll(/['"`]([a-z][a-z0-9]*(?:-[a-z0-9]+)*)['"`]/g)) { const n = ALIASES[m[1]] || m[1]; if (available.has(n)) names.add(n); }
+}
+// web kaynakları (src/) da taranır
+const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+for (const f of walk(new URL('../src/', import.meta.url).pathname).filter((x) => /\.(tsx?|css)$/.test(x) && !x.endsWith('icon-data.ts'))) {
+  const txt = fs.readFileSync(f, 'utf8');
   for (const m of txt.matchAll(/['"`]([a-z][a-z0-9]*(?:-[a-z0-9]+)*)['"`]/g)) { const n = ALIASES[m[1]] || m[1]; if (available.has(n)) names.add(n); }
 }
 // web'e özgü ekler

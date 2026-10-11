@@ -157,7 +157,7 @@ function Avatar({ user, name, seed, size = 40, class: cls, style, src }: any) {
   );
 }
 function AvatarGroup({ users = [], max = 4, size = 28, total }: any) {
-  const shown = users.slice(0, max);
+  const shown = users.filter(Boolean).slice(0, max);
   const rest = (total != null ? total : users.length) - shown.length;
   return (
     <span className="avatar-group">

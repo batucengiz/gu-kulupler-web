@@ -13,7 +13,7 @@ import './styles/web.css';
 import './screens/dialogs';
 // import './screens/sheets';
 import './screens/screens-auth';
-// import './screens/screens-clubs';
+import './screens/screens-clubs';
 // import './screens/screens-events';
 // import './screens/screens-manage';
 // import './screens/screens-profile';

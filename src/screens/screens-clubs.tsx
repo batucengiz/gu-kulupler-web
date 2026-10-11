@@ -11,11 +11,9 @@ import {
   ClubCTA,
   ClubCard,
   Cover,
-  DAY,
   DateBadge,
   EmptyState,
   EventCard,
-  Feed,
   INTERESTS,
   Icon,
   IconButton,
@@ -58,7 +56,23 @@ import {
   useRef,
   useState,
   userName,
+  A,
+  LD,
+  useLoader,
+  db,
+  session,
+  prefs,
+  handleError,
+  openManage,
+  ClubEmblem,
+  useStorageUrl,
+  notifPermission,
+  Fragment,
 } from '../ui/kit';
+import * as P from '../data/repo/posts';
+import { upload, prepareImage, StoragePaths } from '../data/repo/storage';
+import { errCode } from '../data/fs';
+import { istanbulDay } from '../lib/util';
 /* ===== SCREENS: CLB · FED ===== */
 const t = (k: string, p?: any) => app.t(k, p);
 const S = SCREENS;
@@ -88,7 +102,7 @@ function applyClubFilters(list, f, u) {
   else out.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
   return out;
 }
-clubFilters = {
+export const clubFilters = {
   DEFAULT_FILTERS,
   filtersOf,
   applyClubFilters,
@@ -102,7 +116,8 @@ S['CLB-01'] = {
   comp: function Clubs({ route }: any) {
     const u = app.uid();
     const f = filtersOf();
-    const grid = app.state.ui.viewMode === 'grid';
+    const grid = prefs.get().clubView === 'grid';
+    const { status, reload } = useLoader(LD.clubsLoader());
     const mine = sel().myClubs(u);
     const all = applyClubFilters(sel().allClubs(), f, u);
     const nAct = activeFilterCount(f);
@@ -113,7 +128,6 @@ S['CLB-01'] = {
           ...patch,
         },
       });
-    const [tick, setTick] = useState(0);
     return (
       <>
         <AppBar large title={t('nav.clubs')}>
@@ -128,7 +142,7 @@ S['CLB-01'] = {
             }
           />
         </AppBar>
-        <Scroll routeKey={route.key} onRefresh={() => setTick(tick + 1)} refreshAction="CLB-01.refresh">
+        <Scroll routeKey={route.key} onRefresh={() => Promise.all([reload(), session.reloadRsvps()])} refreshAction="CLB-01.refresh">
           {mine.length ? (
             <>
               <div
@@ -253,34 +267,19 @@ S['CLB-01'] = {
                 label={grid ? t('common.listView') : t('common.gridView')}
                 action="CLB-01.toggleView"
                 onClick={() =>
-                  app.dispatch('ui.set', {
-                    viewMode: grid ? 'list' : 'grid',
+                  app.dispatch('session.set', {
+                    clubView: grid ? 'list' : 'grid',
                   })
                 }
               />
             </span>
           </div>
-          <ListState
-            n={6}
-            variant="card"
-            emptyProps={{
-              illustration: 'empty-clubs',
-              title: t('clubs.empty.title'),
-              desc: t('clubs.empty.desc'),
-              cta: t('clubs.empty.clear'),
-              ctaAction: 'CLB-01.clearFilters',
-              onCta: () =>
-                app.dispatch('ui.set', {
-                  clubFilters: null,
-                  dataMode: 'normal',
-                }),
-            }}
-          >
+          <ListState n={6} variant="card" status={all.length ? 'ok' : status} onRetry={reload} retryAction="CLB-01.retry">
             {all.length ? (
               <>
                 <div className={cx(grid ? 'grid2 px16' : 'col gap12 px16')}>
                   {all.map((c) => (
-                    <ClubCard key={c.id + tick} club={c} grid={grid} />
+                    <ClubCard key={c.id} club={c} grid={grid} />
                   ))}
                 </div>
                 <ListEnd />
@@ -311,7 +310,13 @@ function Highlight({ text, q }: any) {
   if (!q) return text;
   const i = text.toLocaleLowerCase('tr').indexOf(q.toLocaleLowerCase('tr'));
   if (i < 0) return text;
-  return [text.slice(0, i), <b>{text.slice(i, i + q.length)}</b>, text.slice(i + q.length)];
+  return (
+    <>
+      {text.slice(0, i)}
+      <b>{text.slice(i, i + q.length)}</b>
+      {text.slice(i + q.length)}
+    </>
+  );
 }
 S['CLB-02'] = {
   tab: 'clubs',
@@ -330,7 +335,9 @@ S['CLB-02'] = {
       }, 250);
       return () => clearTimeout(id);
     }, [q]);
-    const recents = app.state.ui.recentSearches;
+    const recents = prefs.get().recentSearches;
+    useLoader(LD.clubsLoader());
+    useLoader(tab === 'events' || dq ? LD.upcomingLoader() : null);
     const me = app.me();
     const suggested = useMemo(() => {
       const ints = (me && me.interests) || [];
@@ -379,7 +386,12 @@ S['CLB-02'] = {
               aria-label={t('common.search')}
               data-action="CLB-02.input"
               data-autofocus="1"
-              ref={(el) => el && !el.dataset.f && ((el.dataset.f = 1), setTimeout(() => el.focus(), 50))}
+              ref={(el) => {
+                if (el && !el.dataset.f) {
+                  el.dataset.f = '1';
+                  setTimeout(() => el.focus(), 50);
+                }
+              }}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && commit()}
             />
@@ -404,10 +416,10 @@ S['CLB-02'] = {
         />
         <Scroll routeKey="search">
           {!dq ? (
-            [
-              recents.length
-                ? [
-                    <SectionTitle
+            <>
+              {recents.length
+                ? <>{<SectionTitle
+                      key="rt"
                       title={t('search.recent')}
                       actionLabel={t('common.clear')}
                       action="CLB-02.clearRecent"
@@ -423,8 +435,7 @@ S['CLB-02'] = {
                             }),
                         });
                       }}
-                    />,
-                    recents.map((r, i) => (
+                    />}{recents.map((r, i) => (
                       <Tile
                         key={r}
                         leading={<Icon name="history" size={20} class="c-muted" />}
@@ -446,16 +457,15 @@ S['CLB-02'] = {
                           />
                         }
                       />
-                    )),
-                  ]
-                : null,
-              <SectionTitle title={t('search.popular')} />,
+                    ))}</>
+                : null}
+              <SectionTitle title={t('search.popular')} />
               <div className="row wrap gap8 px16">
                 {POPULAR_SEARCHES.map((p, i) => (
                   <Chip key={p} icon="trending-up" label={p} action={'CLB-02.popular.' + i} onClick={() => setQ(p)} />
                 ))}
-              </div>,
-              tab === 'clubs' ? (
+              </div>
+              {tab === 'clubs' ? (
                 <>
                   <SectionTitle title={t('search.suggested')} />
                   <div className="col gap12 px16">
@@ -464,8 +474,8 @@ S['CLB-02'] = {
                     ))}
                   </div>
                 </>
-              ) : null,
-            ]
+              ) : null}
+            </>
           ) : busy ? (
             <SkeletonList n={3} />
           ) : tab === 'clubs' ? (
@@ -475,9 +485,7 @@ S['CLB-02'] = {
                   <Tile
                     key={c.id}
                     leading={
-                      <span className="emblem is-sm">
-                        <Icon name={c.iconName} size={20} />
-                      </span>
+                      <ClubEmblem club={c} cls="is-sm" size={20} />
                     }
                     title={<Highlight text={c.name} q={dq} />}
                     subtitle={`${catName(c)} · ${t('clubs.card.members', {
@@ -504,7 +512,7 @@ S['CLB-02'] = {
                   key={e.id}
                   leading={<DateBadge ts={e.startsAt} />}
                   title={<Highlight text={e.title} q={dq} />}
-                  subtitle={`${sel().club(e.clubId).name} · ${app.fmt.time(e.startsAt)}`}
+                  subtitle={`${(sel().club(e.clubId) || ({} as any)).name || ''} · ${app.fmt.date(e.startsAt)} ${app.fmt.time(e.startsAt)}`}
                   chevron
                   action={'CLB-02.result.event.' + e.id}
                   onClick={() => {
@@ -548,16 +556,19 @@ function NoResults({ q, onPick }: any) {
 }
 
 /* FED-01 feed (component used inside CLB-03) */
-function Feed({ clubId, screen = 'FED-01', highlightId }: any) {
+export function Feed({ clubId, screen = 'FED-01', highlightId }: any) {
   const u = app.uid();
-  const club = sel().club(clubId);
   const manager = sel().isManager(clubId, u);
   const [filter, setFilter] = useState('all');
+  const { status, reload } = useLoader({ key: 'feed:' + clubId, fn: () => A.loadFeed(clubId) });
+  const page = db.feeds['feed:' + clubId];
+  const [more, setMore] = useState(false);
   const posts = sel().clubPosts(clubId, u);
   const countRef = useRef(posts.length);
   const [fresh, setFresh] = useState(0);
   useEffect(() => {
-    if (posts.length > countRef.current) setFresh(posts.length - countRef.current);
+    if (posts.length > countRef.current && countRef.current > 0) setFresh(posts.length - countRef.current);
+    else countRef.current = posts.length;
   }, [posts.length]);
   const filtered = posts.filter(
     (p) =>
@@ -566,6 +577,16 @@ function Feed({ clubId, screen = 'FED-01', highlightId }: any) {
       (filter === 'polls' && p.type === 'poll') ||
       (filter === 'images' && p.images.length),
   );
+  const loadMore = async () => {
+    setMore(true);
+    try {
+      await A.loadFeed(clubId, true);
+    } catch (e) {
+      handleError(e);
+    } finally {
+      setMore(false);
+    }
+  };
   const compose = () =>
     app.nav.push('FED-03', {
       clubId,
@@ -628,18 +649,7 @@ function Feed({ clubId, screen = 'FED-01', highlightId }: any) {
           />
         </div>
       ) : null}
-      <ListState
-        n={3}
-        variant="card"
-        emptyProps={{
-          illustration: 'empty-posts',
-          title: t('feed.empty.title'),
-          desc: manager ? t('feed.empty.descManager') : t('feed.empty.desc'),
-          cta: manager ? t('feed.empty.cta') : null,
-          ctaAction: 'FED-01.compose',
-          onCta: compose,
-        }}
-      >
+      <ListState n={3} variant="card" status={posts.length ? 'ok' : status} onRetry={reload} retryAction="FED-01.retry">
         {filtered.length ? (
           <>
             <div className="col gap12 px16">
@@ -647,7 +657,13 @@ function Feed({ clubId, screen = 'FED-01', highlightId }: any) {
                 <PostCard key={p.id} post={p} screen={screen} highlight={p.id === highlightId} />
               ))}
             </div>
-            <ListEnd />
+            {page && page.hasMore ? (
+              <div className="px16 pb16">
+                <Button variant="outline" full label={t('web.loadMore')} loading={more} action="FED-01.loadMore" onClick={loadMore} />
+              </div>
+            ) : (
+              <ListEnd />
+            )}
           </>
         ) : (
           <EmptyState
@@ -671,14 +687,12 @@ S['FED-01'] = {
       <>
         <AppBar onBack={() => app.nav.back()} backAction="FED-01.back" title={t('feed.title')} />
         <Scroll routeKey={'feed-' + params.id}>
-          <Feed clubId={params.id || 'c01'} />
+          <Feed clubId={params.id} />
         </Scroll>
       </>
     );
   },
-  embedded: true,
 };
-Feed = Feed;
 
 /* CLB-03 club detail */
 S['CLB-03'] = {
@@ -691,19 +705,35 @@ S['CLB-03'] = {
     const [py, setPy] = useState(0);
     const [more, setMore] = useState(false);
     const [evSeg, setEvSeg] = useState('upcoming');
-    if (!club) return S['SYS-04'].comp({});
+    const clubLoad = useLoader(club ? null : LD.clubLoader(params.id));
+    const inside = !!club && sel().canSeeInside(club.id, u);
+    const boardLoad = useLoader(club ? LD.boardLoader(club.id, inside, club.presidentId) : null);
+    const membersLoad = useLoader(club && inside && tab === 'members' ? LD.membersLoader(club.id, 5) : null);
+    const eventsLoad = useLoader(club && tab === 'events' ? LD.clubPublicEventsLoader(club.id, inside) : null);
+    if (!club) {
+      if (clubLoad.status === 'error') return <NotFoundInline />;
+      return (
+        <>
+          <AppBar onBack={() => app.nav.back()} backAction="CLB-03.back" title="" />
+          <SkeletonList n={4} variant="card" />
+        </>
+      );
+    }
     const mode = sel().mode(club.id, u);
-    const inside = sel().canSeeInside(club.id, u);
-    const members = sel().clubMembers(club.id);
-    const board = sel().board(club.id);
-    const advisor = sel().user(club.advisorId);
+    const members = LD.memberPageList(club.id).map((x) => ({ ...x, user: sel().user(x.userId) }));
+    const boardList = sel().board(club.id);
+    const president = sel().user(club.presidentId);
+    const board = boardList.length ? boardList : president ? [{ userId: president.id, role: 'president', user: president }] : [];
+    const adv = club.advisor;
+    const advisor = adv && adv.userId ? sel().user(adv.userId) : null;
     const m = sel().membership(club.id, u);
+    const social = club.social || {};
     const events = sel()
       .clubEvents(club.id)
       .filter((e) => e.status !== 'draft' && (inside || e.visibility === 'public'))
       .filter((e) => (evSeg === 'upcoming' ? e.endsAt >= Date.now() && e.status !== 'cancelled' : e.endsAt < Date.now() || e.status === 'cancelled'))
       .sort((a, b) => (evSeg === 'upcoming' ? a.startsAt - b.startsAt : b.startsAt - a.startsAt));
-    const onScroll = (e) => setPy(Math.min(220, e.target.scrollTop));
+    const onScroll = (e) => setPy(Math.min(220, e.currentTarget.scrollTop));
     const link = (type, url) =>
       app.openDialog('DLG-32', {
         url,
@@ -716,7 +746,8 @@ S['CLB-03'] = {
         {mode === 'visitor' || mode === 'pending' || mode === 'rejected' || mode === 'removed' ? <ClubCTA club={club} screen="CLB-03" /> : null}
       </div>
     );
-    return [
+    return (
+      <>
       <div
         className="screen-scroll no-safe"
         onScroll={onScroll}
@@ -728,7 +759,7 @@ S['CLB-03'] = {
         <div
           className="parallax"
           style={{
-            '--py': py,
+            ['--py' as any]: py,
           }}
         >
           <Cover
@@ -736,6 +767,7 @@ S['CLB-03'] = {
             icon={club.iconName}
             palette={club.palette}
             pattern={club.pattern}
+            path={club.coverPath}
             style={{
               height: '100%',
             }}
@@ -777,9 +809,7 @@ S['CLB-03'] = {
             position: 'relative',
           }}
         >
-          <span className="emblem">
-            <Icon name={club.iconName} size={34} />
-          </span>
+          <ClubEmblem club={club} size={34} />
         </div>
         <div className="col gap8 px16 pt8">
           <h1 className="t-title-l">{club.name}</h1>
@@ -804,7 +834,7 @@ S['CLB-03'] = {
               count: club.memberCount,
             })}
           >
-            <AvatarGroup users={members.slice(0, 4).map((x) => x.user)} size={28} total={club.memberCount} />
+            <AvatarGroup users={(members.length ? members : board).slice(0, 4).map((x) => x.user)} size={28} total={club.memberCount} />
             <span className="t-body-s c-sec tnum">
               {t('clubs.card.members', {
                 count: club.memberCount,
@@ -862,40 +892,54 @@ S['CLB-03'] = {
                 })}
               </span>
             </div>
-            <Card>
-              <Tile
-                inCard
-                leading={<Icon name="mail" size={20} class="c-brand" />}
-                title={club.social.email}
-                subtitle={t('club.contact.email')}
-                action="CLB-03.about.link.email"
-                onClick={() => link('email', 'mailto:' + club.social.email)}
-              />
-              <div className="divider" />
-              <Tile
-                inCard
-                leading={<Icon name="camera" size={20} class="c-brand" />}
-                title={club.social.instagram}
-                subtitle="Instagram"
-                action="CLB-03.about.link.instagram"
-                onClick={() => link('instagram', 'https://instagram.com/' + club.social.instagram.slice(1))}
-              />
-              <div className="divider" />
-              <Tile
-                inCard
-                leading={<Icon name="globe" size={20} class="c-brand" />}
-                title={club.social.web.replace('https://', '')}
-                subtitle={t('club.contact.web')}
-                action="CLB-03.about.link.web"
-                onClick={() => link('web', club.social.web)}
-              />
-            </Card>
+            {social.email || social.instagram || social.web ? (
+              <Card>
+                {[
+                  social.email ? (
+                    <Tile
+                      key="email"
+                      inCard
+                      leading={<Icon name="mail" size={20} class="c-brand" />}
+                      title={social.email}
+                      subtitle={t('club.contact.email')}
+                      action="CLB-03.about.link.email"
+                      onClick={() => link('email', 'mailto:' + social.email)}
+                    />
+                  ) : null,
+                  social.instagram ? (
+                    <Tile
+                      key="instagram"
+                      inCard
+                      leading={<Icon name="camera" size={20} class="c-brand" />}
+                      title={social.instagram}
+                      subtitle="Instagram"
+                      action="CLB-03.about.link.instagram"
+                      onClick={() => link('instagram', 'https://instagram.com/' + String(social.instagram).replace(/^@/, ''))}
+                    />
+                  ) : null,
+                  social.web ? (
+                    <Tile
+                      key="web"
+                      inCard
+                      leading={<Icon name="globe" size={20} class="c-brand" />}
+                      title={String(social.web).replace(/^https?:\/\//, '')}
+                      subtitle={t('club.contact.web')}
+                      action="CLB-03.about.link.web"
+                      onClick={() => link('web', /^https?:/.test(String(social.web)) ? social.web : 'https://' + social.web)}
+                    />
+                  ) : null,
+                ]
+                  .filter(Boolean)
+                  .flatMap((el, k) => (k ? [<div key={'d' + k} className="divider" />, el] : [el]))}
+              </Card>
+            ) : null}
+            {adv ? (
             <div className="col gap8">
               <h2 className="t-title-s">{t('club.advisor')}</h2>
               <Card>
                 <UserRow
-                  user={advisor}
-                  sub={t('role.advisor')}
+                  user={advisor || { id: 'advisor', name: adv.name, avatarSeed: adv.name, avatarPath: null }}
+                  sub={adv.title || t('role.advisor')}
                   action={'CLB-03.about.person.' + (advisor ? advisor.id : 'x')}
                   onClick={() =>
                     advisor &&
@@ -905,16 +949,16 @@ S['CLB-03'] = {
                     })
                   }
                   inCard
-                  chevron
+                  chevron={!!advisor}
                 />
               </Card>
             </div>
+            ) : null}
             <div className="col gap8">
               <h2 className="t-title-s">{t('club.board')}</h2>
               <Card>
-                {board.map((b, i) => [
-                  i ? <div className="divider" /> : null,
-                  <UserRow
+                {board.length === 0 && boardLoad.status === 'loading' ? <SkeletonList n={2} /> : null}
+                {board.map((b, i) => <Fragment key={b.userId}>{i ? <div className="divider" /> : null}{<UserRow
                     key={b.userId}
                     user={b.user}
                     sub={deptYear(b.user)}
@@ -928,14 +972,13 @@ S['CLB-03'] = {
                     }
                     inCard
                     chevron
-                  />,
-                ])}
+                  />}</Fragment>)}
               </Card>
             </div>
             <div className="col gap8">
               <h2 className="t-title-s">{t('club.conditions')}</h2>
               <ul className="col gap6 t-body-m c-sec">
-                {club.conditions.map((c) => (
+                {(club.conditions || []).map((c) => (
                   <li key={c}>{c}</li>
                 ))}
               </ul>
@@ -972,14 +1015,7 @@ S['CLB-03'] = {
               action="CLB-03.eventSeg"
             />
             {!inside ? <Banner kind="info" icon="lock" text={t('club.eventsVisitorNote')} /> : null}
-            <ListState
-              n={3}
-              variant="card"
-              emptyProps={{
-                illustration: 'empty-events',
-                title: t('event.empty.title'),
-              }}
-            >
+            <ListState n={3} variant="card" status={events.length ? 'ok' : eventsLoad.status} onRetry={eventsLoad.reload} retryAction="CLB-03.events.retry">
               {events.length ? (
                 events.map((e) => <EventCard key={e.id} ev={e} screen="CLB-03" compact showClub={false} />)
               ) : (
@@ -997,6 +1033,7 @@ S['CLB-03'] = {
                   count: club.memberCount,
                 })}
               </div>
+              {members.length === 0 && membersLoad.status !== 'error' ? <SkeletonList n={3} /> : null}
               {members.slice(0, 5).map((mm) => (
                 <MemberRow key={mm.userId} m={mm} screen="CLB-03" clubId={club.id} />
               ))}
@@ -1023,18 +1060,14 @@ S['CLB-03'] = {
             )
           )
         ) : null}
-      </div>,
-      club.status === 'suspended' ? null : mode === 'manager' || mode === 'super' ? (
+      </div>
+      {club.status === 'suspended' ? null : mode === 'manager' || mode === 'super' ? (
         <StickyCTA>
           <Button
             icon="layout-grid"
             label={t('club.cta.manage')}
             action="CLB-03.openManage"
-            onClick={() =>
-              app.nav.push('MGT-01', {
-                clubId: club.id,
-              })
-            }
+            onClick={() => openManage(club.id)}
           />
           <Button
             variant="tonal"
@@ -1066,7 +1099,7 @@ S['CLB-03'] = {
         <StickyCTA>
           <div className="flex1 col gap4">
             {mode === 'visitor' && !club.applicationsOpen ? <span className="t-caption center">{t('club.closedNote')}</span> : null}
-            {mode === 'rejected' && m && m.retryAfter > Date.now() ? (
+            {mode === 'rejected' && m && m.retryAfter && m.retryAfter > Date.now() ? (
               <span className="t-caption center">
                 {t('application.retryAt', {
                   date: app.fmt.date(m.retryAfter),
@@ -1076,10 +1109,15 @@ S['CLB-03'] = {
             <ClubCTA club={club} screen="CLB-03" size="lg" full />
           </div>
         </StickyCTA>
-      ),
-    ];
+      )}
+      </>
+    );
   },
 };
+function NotFoundInline() {
+  const C = SCREENS['SYS-04'].comp;
+  return <C params={{}} />;
+}
 
 /* CLB-04 applied */
 S['CLB-04'] = {
@@ -1089,7 +1127,8 @@ S['CLB-04'] = {
     const u = app.uid();
     const club = sel().club(params.id);
     const m = sel().membership(params.id, u);
-    const perm = app.state.session.notifPermission;
+    const perm = notifPermission();
+    if (!club) return <NotFoundInline />;
     return (
       <>
         <AppBar onBack={() => app.nav.popTo('CLB-03') || app.nav.back()} backAction="CLB-04.close" closeIcon title="" />
@@ -1112,9 +1151,7 @@ S['CLB-04'] = {
               }}
             >
               <div className="row gap12">
-                <span className="emblem is-sm">
-                  <Icon name={club.iconName} size={20} />
-                </span>
+                <ClubEmblem club={club} cls="is-sm" size={20} />
                 <div className="flex1">
                   <div className="t-title-s">{club.name}</div>
                   <div className="t-caption">
@@ -1149,7 +1186,7 @@ S['CLB-04'] = {
                 <Button size="sm" variant="tonal" label={t('common.open')} action="CLB-04.enableNotifications" onClick={() => app.openDialog('DLG-03')} />
               </Card>
             ) : null}
-            <Button size="lg" full label={t('applied.browse')} action="CLB-04.browse" onClick={() => app.nav.resetTo('CLB-01')} />
+            <Button size="lg" full label={t('applied.browse')} action="CLB-04.browse" onClick={() => app.nav.openInTab('clubs', [])} />
             <Button
               variant="text"
               label={t('applied.myApplications')}
@@ -1182,8 +1219,9 @@ S['CLB-05'] = {
     const m = sel().membership(params.id, u);
     const [note, setNote] = useState(m ? m.note : '');
     const [busy, run] = useBusy();
-    if (!club) return S['SYS-04'].comp({});
-    const st = m ? m.status : 'none';
+    if (!club) return <NotFoundInline />;
+    const st0 = m ? m.status : 'none';
+    const st = st0 === 'cancelled' || st0 === 'left' ? 'none' : st0;
     const steps = [
       {
         k: 'sent',
@@ -1222,9 +1260,7 @@ S['CLB-05'] = {
                   padding: '12px 16px',
                 }}
               >
-                <span className="emblem is-sm">
-                  <Icon name={club.iconName} size={20} />
-                </span>
+                <ClubEmblem club={club} cls="is-sm" size={20} />
                 <div className="flex1">
                   <div className="t-title-s">{club.name}</div>
                   <div className="t-caption">{catName(club)}</div>
@@ -1271,17 +1307,12 @@ S['CLB-05'] = {
                   variant="tonal"
                   label={t('common.save')}
                   loading={busy}
-                  disabled={note === (m.note || '')}
+                  disabled={note === (m!.note || '')}
                   action="CLB-05.saveNote"
                   onClick={() =>
                     run(async () => {
                       if (!app.requireOnline()) return;
-                      await app.api();
-                      app.dispatch('membership.saveNote', {
-                        clubId: club.id,
-                        userId: u,
-                        note,
-                      });
+                      await A.saveApplicationNote(club.id, note.trim());
                       app.toast('TST-07');
                     })
                   }
@@ -1299,15 +1330,13 @@ S['CLB-05'] = {
               </>
             ) : null}
             {st === 'rejected' || st === 'removed'
-              ? [
-                  m.rejectReason ? (
-                    <Card muted class="card-body col gap4">
+              ? <>{m!.rejectReason ? (
+                    <Card key="reason" muted class="card-body col gap4">
                       <span className="t-overline">{t('application.reason')}</span>
-                      <span className="t-body-m">{t('rejectReason.' + m.rejectReason)}</span>
-                      {m.rejectNote ? <span className="t-body-s c-sec">{m.rejectNote}</span> : null}
+                      <span className="t-body-m">{t('rejectReason.' + m!.rejectReason)}</span>
+                      {m!.rejectNote ? <span className="t-body-s c-sec">{m!.rejectNote}</span> : null}
                     </Card>
-                  ) : null,
-                  <div className="row gap8">
+                  ) : null}{<div key="retry" className="row gap8">
                     <Badge
                       kind={canRetry ? 'success' : 'pending'}
                       icon="hourglass"
@@ -1315,25 +1344,27 @@ S['CLB-05'] = {
                         canRetry
                           ? t('application.canReapply')
                           : t('application.retryAt', {
-                              date: app.fmt.date(m.retryAfter),
+                              date: app.fmt.date(m!.retryAfter!),
                             })
                       }
                     />
-                    {!canRetry ? <span className="t-caption">{app.fmt.countdown(m.retryAfter)}</span> : null}
-                  </div>,
-                  <Button
+                    {!canRetry ? <span className="t-caption">{app.fmt.countdown(m!.retryAfter!)}</span> : null}
+                  </div>}{<Button
+                    key="reapply"
                     label={t('application.reapply')}
                     disabled={!canRetry || !club.applicationsOpen}
                     action="CLB-05.reapply"
                     onClick={() => startJoin(club.id)}
                     onDisabledClick={() =>
                       app.toast(!club.applicationsOpen ? 'TST-X1' : 'TST-X4', {
-                        date: app.fmt.date(m.retryAfter),
+                        date: app.fmt.date(m!.retryAfter!),
                       })
                     }
-                  />,
-                  !canRetry ? <p className="t-caption">{t('application.retryNote')}</p> : null,
-                ]
+                  />}{!canRetry ? (
+                    <p key="note" className="t-caption">
+                      {t('application.retryNote')}
+                    </p>
+                  ) : null}</>
               : null}
             {st === 'active' ? (
               <>
@@ -1371,17 +1402,22 @@ S['CLB-06'] = {
     const club = sel().club(params.id);
     const [q, setQ] = useState('');
     const [role, setRole] = useState('all');
+    const { status, reload } = useLoader(club && sel().canSeeInside(club.id, u) ? LD.allMembersLoader(club.id) : null);
+    if (!club) return <NotFoundInline />;
     const manager = sel().isManager(club.id, u) || sel().isSuper(u);
+    const nm = (m) => (m.user ? m.user.name : (m.applicant && m.applicant.name) || '');
     const all = sel()
       .clubMembers(club.id)
-      .filter((m) => !q || m.user.name.toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
+      .filter((m) => !q || nm(m).toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
       .filter((m) => role === 'all' || (role === 'board' && (m.role === 'board' || m.role === 'president')) || (role === 'member' && m.role === 'member'));
-    const groups = [
-      ['president', all.filter((m) => m.role === 'president')],
-      ['board', all.filter((m) => m.role === 'board')],
-      ['advisor', all.filter((m) => m.role === 'advisor')],
-      ['member', all.filter((m) => m.role === 'member').sort((a, b) => a.user.name.localeCompare(b.user.name, 'tr'))],
-    ].filter(([, l]) => l.length);
+    const groups: Array<[string, any[]]> = (
+      [
+        ['president', all.filter((m) => m.role === 'president')],
+        ['board', all.filter((m) => m.role === 'board')],
+        ['advisor', all.filter((m) => m.role === 'advisor')],
+        ['member', all.filter((m) => m.role === 'member').sort((a, b) => nm(a).localeCompare(nm(b), 'tr'))],
+      ] as Array<[string, any[]]>
+    ).filter(([, l]) => l.length);
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="CLB-06.back" title={t('members.title')} subtitle={club.name} />
@@ -1398,20 +1434,13 @@ S['CLB-06'] = {
           ))}
         </div>
         <Scroll routeKey={'members-' + club.id}>
-          <ListState
-            n={6}
-            emptyProps={{
-              title: t('members.noResults'),
-            }}
-          >
+          <ListState n={6} status={all.length ? 'ok' : status} onRetry={reload} retryAction="CLB-06.retry">
             {all.length ? (
-              [
-                <div className="px16 t-caption tnum pb16">
+              <>{<div key="total" className="px16 t-caption tnum pb16">
                   {t('members.total', {
                     count: all.length,
                   })}
-                </div>,
-                groups.map(([r, list]) => (
+                </div>}{groups.map(([r, list]) => (
                   <div key={r}>
                     <div className="group-head">
                       <span className="t-overline">{t('role.' + r)}</span>
@@ -1435,8 +1464,7 @@ S['CLB-06'] = {
                       />
                     ))}
                   </div>
-                )),
-              ]
+                ))}</>
             ) : (
               <EmptyState illustration="empty-clubs" title={t('members.noResults')} compact />
             )}
@@ -1454,13 +1482,27 @@ S['CLB-07'] = {
   comp: function UserProfile({ params }: any) {
     const u = app.uid();
     const usr = sel().user(params.id);
-    const me = app.me();
-    if (!usr) return S['SYS-04'].comp({});
-    const common = sel().commonClubs(u, usr.id);
+    const { status } = useLoader(LD.profileLoader(params.id, params.clubId));
+    if (!usr) {
+      if (status === 'loading' || status === 'idle')
+        return (
+          <>
+            <AppBar onBack={() => app.nav.back()} backAction="CLB-07.back" title={t('userprofile.title')} />
+            <SkeletonList n={3} />
+          </>
+        );
+      return <NotFoundInline />;
+    }
+    const common = sel()
+      .myClubs(u)
+      .map((x) => x.club)
+      .filter((c) => usr.id !== u && sel().membership(c.id, usr.id)?.status === 'active');
     const ctxClub = params.clubId ? sel().club(params.clubId) : null;
-    const managerCtx = ctxClub && (sel().isManager(ctxClub.id, u) || sel().isSuper(u)) && sel().membership(ctxClub.id, usr.id);
-    const blocked = (me.blocked || []).includes(usr.id);
-    const visible = common.length > 0 || managerCtx || sel().isSuper(u) || usr.id === u;
+    const ctxM = ctxClub ? sel().membership(ctxClub.id, usr.id) : null;
+    const managerCtx = ctxClub && (sel().isManager(ctxClub.id, u) || sel().isSuper(u)) && ctxM && ctxM.status === 'active' ? ctxM : null;
+    const email = db.extra['email:' + usr.id] || null;
+    const blocked = session.s.blocked.includes(usr.id);
+    const visible = usr.status !== 'deleted' && (common.length > 0 || !!managerCtx || sel().isSuper(u) || usr.id === u);
     const roles = common
       .map((c) => ({
         club: c,
@@ -1491,18 +1533,17 @@ S['CLB-07'] = {
               text={t('userprofile.blockedBanner')}
               actionLabel={t('userprofile.unblock')}
               action="CLB-07.unblock"
-              onAction={() => {
-                const snap = app.store.get();
-                app.dispatch('user.unblock', {
-                  userId: u,
-                  targetId: usr.id,
-                });
-                app.toast('TST-09', {
-                  name: usr.name,
-                  unblocked: true,
-                  undo: () => app.store.restore(snap),
-                });
-              }}
+              onAction={() =>
+                A.unblockUser(usr.id)
+                  .then(() =>
+                    app.toast('TST-09', {
+                      name: usr.name,
+                      unblocked: true,
+                      undo: () => A.blockUser(usr.id).catch(handleError),
+                    }),
+                  )
+                  .catch(handleError)
+              }
             />
           ) : null}
           <div
@@ -1514,7 +1555,6 @@ S['CLB-07'] = {
             <Avatar user={usr} size={96} />
             <h1 className="t-title-l">{usr.name}</h1>
             {visible ? <span className="t-body-m c-sec">{deptYear(usr)}</span> : null}
-            {usr.global === 'superadmin' ? <RoleBadge role="superadmin" /> : null}
             {roles.length ? (
               <div
                 className="row gap6 wrap"
@@ -1565,12 +1605,12 @@ S['CLB-07'] = {
                   </div>
                 </div>
               ) : null}
-              {managerCtx || sel().isSuper(u) ? (
+              {(managerCtx || sel().isSuper(u)) && email ? (
                 <Card>
                   <Tile
                     inCard
                     leading={<Icon name="mail" size={20} class="c-muted" />}
-                    title={usr.email}
+                    title={email}
                     subtitle={t('auth.email')}
                     trailing={
                       <Button
@@ -1580,7 +1620,7 @@ S['CLB-07'] = {
                         label={t('common.copy')}
                         action="CLB-07.copyEmail"
                         onClick={() => {
-                          copyText(usr.email);
+                          copyText(email);
                           app.toast('TST-08');
                         }}
                       />
@@ -1594,7 +1634,7 @@ S['CLB-07'] = {
                         leading={<Icon name="shield-check" size={20} class="c-muted" />}
                         title={t('role.' + managerCtx.role)}
                         subtitle={t('userprofile.roleIn', {
-                          club: ctxClub.name,
+                          club: ctxClub!.name,
                         })}
                       />
                       <div className="divider" />
@@ -1610,7 +1650,7 @@ S['CLB-07'] = {
               ) : null}
               {managerCtx && managerCtx.role !== 'president' && managerCtx.role !== 'advisor' ? (
                 <div className="col gap8">
-                  {sel().isPresident(ctxClub.id, u) || sel().isSuper(u) ? (
+                  {sel().isPresident(ctxClub!.id, u) || sel().isSuper(u) ? (
                     <Button
                       variant="outline"
                       icon="user-cog"
@@ -1618,7 +1658,7 @@ S['CLB-07'] = {
                       action="CLB-07.changeRole"
                       onClick={() =>
                         app.openSheet('SHT-22', {
-                          clubId: ctxClub.id,
+                          clubId: ctxClub!.id,
                           userId: usr.id,
                         })
                       }
@@ -1631,7 +1671,7 @@ S['CLB-07'] = {
                     action="CLB-07.remove"
                     onClick={() =>
                       app.openDialog('DLG-19', {
-                        clubId: ctxClub.id,
+                        clubId: ctxClub!.id,
                         userId: usr.id,
                       })
                     }
@@ -1652,25 +1692,28 @@ S['FED-02'] = {
   title: 'post.title',
   comp: function PostDetail({ params }: any) {
     const u = app.uid();
+    const live = LD.usePostLive(params.postId, params.clubId);
     const post = sel().post(params.postId);
     const [text, setText] = useState('');
     const [busy, run] = useBusy();
-    const listRef = useRef<any>(null);
-    if (!post || post.deleted || post.hidden) return S['SYS-04'].comp({});
-    const comments = sel().postComments(post.id, u);
-    const advisor = sel().isAdvisor(post.clubId, u);
-    const manager = sel().isManager(post.clubId, u) || sel().isSuper(u);
-    const canView = sel().canSeeInside(post.clubId, u);
+    const canView = sel().canSeeInside(params.clubId, u);
+    if (canView && (!post || live === 'loading') && live !== 'missing' && live !== 'error')
+      return (
+        <>
+          <AppBar onBack={() => app.nav.back()} backAction="FED-02.back" title={t('post.title')} />
+          <SkeletonList n={2} variant="card" />
+        </>
+      );
+    if (canView && (!post || live === 'missing' || live === 'error' || post.isDeleted || (post.isHidden && !sel().isManager(post.clubId, u) && post.authorId !== u)))
+      return <NotFoundInline />;
+    const comments = post ? sel().postComments(post.id) : [];
+    const advisor = sel().isAdvisor(params.clubId, u);
+    const manager = sel().isManager(params.clubId, u) || sel().isSuper(u);
     const send = () =>
       run(async () => {
-        if (!text.trim()) return;
-        if (!app.requireOnline()) return;
-        await app.api();
-        app.dispatch('comment.add', {
-          postId: post.id,
-          authorId: u,
-          text: text.trim(),
-        });
+        if (!post || !text.trim()) return;
+        if (!app.guard(post.clubId)) return;
+        await A.addComment(post, text.trim());
         setText('');
         app.toast('TST-12');
         setTimeout(() => {
@@ -1686,17 +1729,22 @@ S['FED-02'] = {
       if (c.authorId === u)
         app.openDialog('DLG-11', {
           commentId: c.id,
+          postId: c.postId,
         });
       else if (manager)
         app.openSheet('SHT-27', {
           userId: c.authorId,
           commentId: c.id,
+          postId: c.postId,
+          clubId: c.clubId,
           canDelete: true,
         });
       else
         app.openSheet('SHT-27', {
           userId: c.authorId,
           commentId: c.id,
+          postId: c.postId,
+          clubId: c.clubId,
         });
     };
     if (!canView)
@@ -1711,15 +1759,17 @@ S['FED-02'] = {
               action="FED-02.club"
               onClick={() =>
                 app.nav.push('CLB-03', {
-                  id: post.clubId,
+                  id: params.clubId,
                 })
               }
             />
           </div>
         </>
       );
-    return [
-      <AppBar onBack={() => app.nav.back()} backAction="FED-02.back" title={t('post.title')} subtitle={sel().club(post.clubId).name} />,
+    if (!post) return <NotFoundInline />;
+    return (
+      <>
+      <AppBar onBack={() => app.nav.back()} backAction="FED-02.back" title={t('post.title')} subtitle={(sel().club(post.clubId) || ({} as any)).name} />
       <Scroll routeKey={'post-' + post.id}>
         <div className="px16 col gap16">
           <PostCard post={post} screen="FED-02" expanded showClub />
@@ -1780,8 +1830,8 @@ S['FED-02'] = {
             </p>
           )}
         </div>
-      </Scroll>,
-      advisor ? (
+      </Scroll>
+      {advisor ? (
         <Banner kind="readonly" text={t('post.advisorNoComment')} />
       ) : (
         <div
@@ -1815,8 +1865,9 @@ S['FED-02'] = {
             onDisabledClick={() => {}}
           />
         </div>
-      ),
-    ];
+      )}
+      </>
+    );
   },
 };
 
@@ -1829,10 +1880,11 @@ S['FED-03'] = {
     const editing = params.edit ? sel().post(params.edit) : null;
     const clubId = params.clubId || (editing && editing.clubId);
     const club = sel().club(clubId);
-    const draft = app.state.ui.drafts[clubId];
+    const draft = (app.state.ui.drafts || {})[clubId];
     const init = () =>
       editing
         ? {
+            postId: editing.id,
             type: editing.type,
             text: editing.text,
             title: editing.title || '',
@@ -1847,6 +1899,7 @@ S['FED-03'] = {
             preview: false,
           }
         : {
+            postId: P.newPostId(),
             type: 'post',
             text: '',
             title: '',
@@ -1869,8 +1922,10 @@ S['FED-03'] = {
         ...p,
         dirty: true,
       });
+    useLoader(clubId && f.type === 'announcement' ? { key: 'ann:' + clubId, fn: async () => db.setExtra('ann:' + clubId + ':' + istanbulDay(Date.now()).key, await P.getTodayCount(clubId)) } : null);
     const used = sel().dailyAnnouncements(clubId);
-    const limitReached = used >= 2;
+    const limit = app.LIMITS.announcementDailyLimit;
+    const limitReached = used >= limit;
     if (!club || !(sel().isManager(clubId, u) || sel().isSuper(u)))
       return (
         <>
@@ -1925,7 +1980,7 @@ S['FED-03'] = {
     const saveDraft = () => {
       app.dispatch('ui.set', {
         drafts: {
-          ...app.state.ui.drafts,
+          ...(app.state.ui.drafts || {}),
           [clubId]: {
             ...f,
             dirty: false,
@@ -1939,66 +1994,80 @@ S['FED-03'] = {
     const doPublish = (push) =>
       run(async () => {
         if (!app.guard(clubId)) return;
-        await app.api();
-        const poll =
-          f.type === 'poll'
-            ? {
-                options: f.options
-                  .filter((o) => o.trim())
-                  .map((o, i) => ({
-                    id: 'o' + (i + 1),
-                    text: o.trim(),
-                    votes: [],
-                  })),
-                endsAt: Date.now() + f.duration * DAY,
-                showResultsAfterVote: f.showAfterVote,
-              }
-            : null;
-        let id;
-        if (editing) {
-          app.dispatch('post.update', {
-            postId: editing.id,
-            patch: {
+        const postId = f.postId;
+        // yeni görselleri yükle (Storage kuralı metadata.clubId ile yöneticiyi doğrular)
+        const images: any[] = [];
+        for (const img of f.images) {
+          if (img.path) images.push({ path: img.path, w: img.w, h: img.h });
+          else {
+            const path = await upload(StoragePaths.postImage(postId), { blob: img.blob, w: img.w, h: img.h }, { clubId });
+            images.push({ path, w: img.w, h: img.h });
+            upd({ images: f.images.map((x) => (x.key === img.key ? { path, w: img.w, h: img.h, key: img.key } : x)) });
+          }
+        }
+        try {
+          if (editing) {
+            await A.updatePost(editing.id, {
+              clubId,
               text: f.text.trim(),
-              title: f.type === 'announcement' ? f.title.trim() : null,
-              images: f.images,
+              title: editing.type === 'announcement' ? f.title.trim() : editing.title,
+              images: editing.type === 'post' ? images : editing.images,
               pinned: f.pinned,
+            });
+          } else {
+            await A.createPost({
+              clubId,
+              postId,
               type: f.type,
-              poll: poll || editing.poll,
-            },
-          });
-          id = editing.id;
-        } else
-          id = app.dispatch('post.create', {
-            clubId,
-            authorId: u,
-            type: f.type,
-            title: f.type === 'announcement' ? f.title.trim() : null,
-            text: f.text.trim(),
-            images: f.type === 'post' ? f.images : [],
-            poll,
-            pinned: f.type === 'post' ? f.pinned : f.type === 'announcement' ? f.pinned : false,
-            push: f.type === 'announcement' && push,
-          });
+              title: f.type === 'announcement' ? f.title.trim() : null,
+              text: f.text.trim(),
+              images: f.type === 'post' ? images : [],
+              poll:
+                f.type === 'poll'
+                  ? { options: f.options.map((o) => o.trim()).filter(Boolean), durationDays: f.duration, showResultsAfterVote: f.showAfterVote }
+                  : null,
+              pinned: f.type !== 'poll' && f.pinned,
+              push: f.type === 'announcement' && push,
+            });
+          }
+        } catch (e) {
+          if (errCode(e) === 'announcementLimit') {
+            db.setExtra('ann:' + clubId + ':' + istanbulDay(Date.now()).key, limit);
+            app.openDialog('DLG-24', {
+              onPublishSilent: () => {
+                app.closeDialog();
+                doPublish(false);
+              },
+            });
+            return;
+          }
+          throw e;
+        }
         const drafts = {
-          ...app.state.ui.drafts,
+          ...(app.state.ui.drafts || {}),
         };
         delete drafts[clubId];
         app.dispatch('ui.set', {
           drafts,
         });
+        f.images.forEach((x) => x.url && URL.revokeObjectURL(x.url));
         reset();
-        app.nav.popTo('CLB-03');
+        if (editing) {
+          app.nav.back();
+          app.toast('TST-14');
+          return;
+        }
+        if (!app.nav.popTo('CLB-03')) app.nav.back();
         app.nav.replace('CLB-03', {
           id: clubId,
           tab: 'posts',
-          highlight: id,
+          highlight: postId,
         });
         app.toast('TST-14', {
           action: () =>
             app.nav.push('FED-02', {
               clubId,
-              postId: id,
+              postId,
             }),
         });
       });
@@ -2015,7 +2084,7 @@ S['FED-03'] = {
       }
       doPublish(f.push);
     };
-    const authorPreview = {
+    const authorPreview: any = {
       id: 'preview',
       clubId,
       authorId: u,
@@ -2029,19 +2098,20 @@ S['FED-03'] = {
               options: f.options.filter(Boolean).map((o, i) => ({
                 id: 'o' + i,
                 text: o,
-                votes: [],
               })),
-              endsAt: Date.now() + f.duration * DAY,
+              endsAt: Date.now() + f.duration * 864e5,
               showResultsAfterVote: true,
             }
           : null,
       pinned: f.pinned,
       createdAt: Date.now(),
       likes: [],
-      commentIds: [],
+      likeCount: 0,
+      commentCount: 0,
       pushSent: f.push,
     };
-    return [
+    return (
+      <>
       <AppBar onBack={close} backAction="FED-03.close" closeIcon title={editing ? t('compose.editTitle') : t('compose.title')}>
         <IconButton icon="more-vertical" label={t('a11y.more')} action="FED-03.menu" onClick={() => setMenu(true)} />
         <Button
@@ -2053,8 +2123,8 @@ S['FED-03'] = {
           onClick={publish}
           onDisabledClick={validate}
         />
-      </AppBar>,
-      menu ? (
+      </AppBar>
+      {menu ? (
         <PopMenu id="FED-03" onClose={() => setMenu(false)}>
           <Tile
             title={t('compose.saveDraft')}
@@ -2094,7 +2164,7 @@ S['FED-03'] = {
             }}
           />
         </PopMenu>
-      ) : null,
+      ) : null}
       <Scroll routeKey={'compose-' + clubId}>
         <div className="col gap16 px16 pt8 pb24">
           {f.preview ? (
@@ -2114,7 +2184,8 @@ S['FED-03'] = {
               <PostCard post={authorPreview} screen="FED-03" hideActions />
             </>
           ) : (
-            [
+            <>
+              {editing ? null : (
               <Segmented
                 options={[
                   {
@@ -2141,11 +2212,12 @@ S['FED-03'] = {
                   })
                 }
                 action="FED-03.type"
-              />,
+              />
+              )}
               <div className="row gap10">
                 <Avatar user={app.me()} size={36} />
                 <div className="flex1 col">
-                  <span className="t-label-l c-heading">{app.me().name}</span>
+                  <span className="t-label-l c-heading">{(app.me() || ({} as any)).name}</span>
                   {sel().managedClubs(u).length > 1 ? (
                     <button
                       type="button"
@@ -2168,8 +2240,8 @@ S['FED-03'] = {
                     <span className="t-caption">{club.name}</span>
                   )}
                 </div>
-              </div>,
-              f.type === 'announcement' ? (
+              </div>
+              {f.type === 'announcement' ? (
                 <Input
                   label={t('compose.announcementTitle')}
                   value={f.title}
@@ -2183,7 +2255,7 @@ S['FED-03'] = {
                   error={f.errors.title}
                   action="FED-03.title"
                 />
-              ) : null,
+              ) : null}
               <Input
                 label={f.type === 'poll' ? t('compose.question') : t('compose.text')}
                 multiline
@@ -2200,8 +2272,8 @@ S['FED-03'] = {
                 action="FED-03.text"
                 placeholder={t('feed.composePlaceholder')}
                 autofocus
-              />,
-              f.type === 'post' ? (
+              />
+              {f.type === 'post' ? (
                 <>
                   <div className="col gap8">
                     <div className="row between">
@@ -2221,9 +2293,16 @@ S['FED-03'] = {
                           app.openSheet('SHT-16', {
                             multi: true,
                             max: 4 - f.images.length,
-                            onPick: (seeds) =>
-                              upd({
-                                images: [...f.images, ...seeds].slice(0, 4),
+                            onPick: (files) =>
+                              run(async () => {
+                                const list = (Array.isArray(files) ? files : [files]).slice(0, 4 - f.images.length);
+                                const added: any[] = [];
+                                for (const file of list) {
+                                  const pr = await prepareImage(file);
+                                  added.push({ key: 'n' + Date.now() + Math.random(), blob: pr.blob, w: pr.w, h: pr.h, url: URL.createObjectURL(pr.blob) });
+                                }
+                                const cur = app.forms.data['compose-' + clubId + (params.edit || '')] || f;
+                                upd({ images: [...cur.images, ...added].slice(0, 4) });
                               }),
                           })
                         }
@@ -2234,7 +2313,7 @@ S['FED-03'] = {
                       <div className="row gap8 wrap">
                         {f.images.map((s, i) => (
                           <div
-                            key={s}
+                            key={s.key || s.path}
                             className="rel"
                             style={{
                               width: '72px',
@@ -2243,18 +2322,7 @@ S['FED-03'] = {
                               overflow: 'hidden',
                             }}
                           >
-                            <div
-                              style={{
-                                position: 'absolute',
-                                inset: '0',
-                              }}
-                              dangerouslySetInnerHTML={{
-                                __html: coverArtSVG(s, club.iconName, club.palette, undefined, {
-                                  w: 200,
-                                  h: 200,
-                                }),
-                              }}
-                            />
+                            <ComposeThumb img={s} club={club} />
                             <button
                               type="button"
                               className="iconbtn is-sm on-cover"
@@ -2294,8 +2362,8 @@ S['FED-03'] = {
                     />
                   </div>
                 </>
-              ) : null,
-              f.type === 'announcement' ? (
+              ) : null}
+              {f.type === 'announcement' ? (
                 <>
                   <div className="row between">
                     <div className="col">
@@ -2322,9 +2390,11 @@ S['FED-03'] = {
                   <div className="col gap6">
                     <div className="row between t-caption">
                       <span>{t('compose.dailyQuota')}</span>
-                      <span className="tnum">{used}/2</span>
+                      <span className="tnum">
+                        {used}/{limit}
+                      </span>
                     </div>
-                    <Progress value={used} max={2} kind={limitReached ? 'warning' : undefined} label={t('compose.dailyQuota')} />
+                    <Progress value={used} max={limit} kind={limitReached ? 'warning' : undefined} label={t('compose.dailyQuota')} />
                   </div>
                   <div className="row between">
                     <span className="t-body-m">{t('compose.pin')}</span>
@@ -2361,8 +2431,8 @@ S['FED-03'] = {
                     </div>
                   </div>
                 </>
-              ) : null,
-              f.type === 'poll' ? (
+              ) : null}
+              {f.type === 'poll' && !editing ? (
                 <>
                   <div className="col gap8">
                     <span className="field-label">{t('compose.options')}</span>
@@ -2452,11 +2522,24 @@ S['FED-03'] = {
                     />
                   </div>
                 </>
-              ) : null,
-            ]
+              ) : null}
+            </>
           )}
         </div>
-      </Scroll>,
-    ];
+      </Scroll>
+      </>
+    );
   },
 };
+function ComposeThumb({ img, club }: any) {
+  const remote = useStorageUrl(img.url ? null : img.path);
+  const src = img.url || remote;
+  return src ? (
+    <img src={src} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+  ) : (
+    <div
+      style={{ position: 'absolute', inset: '0' }}
+      dangerouslySetInnerHTML={{ __html: coverArtSVG(img.path || 'x', club.iconName, club.palette, undefined, { w: 200, h: 200 }) }}
+    />
+  );
+}

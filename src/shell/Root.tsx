@@ -1,6 +1,6 @@
 /* Uygulama kabuğu — prototip shell.js'teki Device/ScreenHost/BottomNav/Overlays/Toast'un web karşılığı.
    Mobil: tam ekran + alt gezinme. Masaüstü (≥1024px): sol menü + ortada uygulama sütunu. */
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { Component, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { app } from '../app/app';
 import { nav, ui, uiState, forms, setExternalRouteHandler, setTitleFn, TAB_OF } from '../app/core';
 import { db } from '../app/data';
@@ -88,6 +88,26 @@ function SideNav() {
   );
 }
 
+/** Ekran çizerken oluşan beklenmedik hatada tüm uygulama çökmesin: SYS-05 benzeri kurtarma kartı. */
+class ScreenBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+  state = { err: null as Error | null };
+  static getDerivedStateFromError(err: Error) { return { err }; }
+  componentDidCatch(err: Error) { console.error('[screen]', err); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div className="empty" role="alert" style={{ padding: 32 }}>
+        <Icon name="triangle-alert" size={40} />
+        <h2 className="t-title-s c-heading">{t('web.err.generic')}</h2>
+        <div className="row gap10" style={{ justifyContent: 'center' }}>
+          <button type="button" className="btn is-secondary" onClick={() => { this.setState({ err: null }); nav.back(); }}>{t('common.back')}</button>
+          <button type="button" className="btn is-primary" onClick={() => location.reload()}>{t('common.retry')}</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function ScreenHost({ hasNav }: { hasNav: boolean }) {
   const route = nav.current();
   const def = SCREENS[route.screen] || SCREENS['SYS-04'];
@@ -95,7 +115,7 @@ function ScreenHost({ hasNav }: { hasNav: boolean }) {
   return (
     <div className={cx('screen', 'anim-' + nav.anim, hasNav && 'has-nav')} key={route.key} data-screen={route.screen}>
       {!app.online() && nav.mode === 'app' ? <Banner kind="offline" text={t('sys.offline.banner')} /> : null}
-      <Comp params={route.params || {}} route={route} />
+      <ScreenBoundary><Comp params={route.params || {}} route={route} /></ScreenBoundary>
     </div>
   );
 }

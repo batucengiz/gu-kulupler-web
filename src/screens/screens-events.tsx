@@ -303,7 +303,7 @@ S['EVT-02'] = {
         );
       }
     }, [ev && ev.id]);
-    if (!ev || !sel().club(ev.clubId) || (sel().club(ev.clubId).status === 'suspended' && !sel().isSuper(u))) return S['SYS-04'].comp({});
+    if (!ev || !sel().club(ev.clubId) || (sel().club(ev.clubId).status === 'suspended' && !sel().isSuper(u))) return <NotFoundInline />;
     if (!sel().canSeeEvent(ev, u) && ev.visibility === 'members') {
       /* visible as locked */
     }
@@ -508,7 +508,7 @@ S['EVT-02'] = {
         <div
           className="parallax"
           style={{
-            '--py': py,
+            ['--py' as any]: py,
           }}
         >
           <Cover
@@ -558,9 +558,7 @@ S['EVT-02'] = {
             }
             aria-label={club.name}
           >
-            <span className="emblem is-xs">
-              <Icon name={club.iconName} size={16} />
-            </span>
+            <ClubEmblem club={club} cls="is-xs" size={16} />
             <span className="t-body-m c-brand bold ellipsis">{club.name}</span>
             <Icon name="chevron-right" size={16} class="c-muted" />
           </button>
@@ -763,7 +761,7 @@ S['EVT-03'] = {
     const ev = sel().event(params.id);
     const r = sel().myRsvp(params.id, u);
     const me = app.me();
-    if (!ev || !r) return S['SYS-04'].comp({});
+    if (!ev || !r) return <NotFoundInline />;
     const status = ev.status === 'cancelled' ? 'void' : r.status === 'attended' ? 'used' : 'valid';
     const club = sel().club(ev.clubId);
     return (
@@ -935,7 +933,7 @@ S['EVT-04'] = {
               title: t('myevents.empty.' + tab),
               cta: t('events.discover'),
               ctaAction: 'EVT-04.discover',
-              onCta: () => app.nav.resetTo('EVT-01'),
+              onCta: () => app.nav.openInTab('events', []),
             }}
           >
             {list.length ? (
@@ -1015,7 +1013,7 @@ S['EVT-04'] = {
                 title={t('myevents.empty.' + tab)}
                 cta={t('events.discover')}
                 ctaAction="EVT-04.discover"
-                onCta={() => app.nav.resetTo('EVT-01')}
+                onCta={() => app.nav.openInTab('events', [])}
               />
             )}
           </ListState>
@@ -1033,7 +1031,7 @@ S['NTF-01'] = {
     const u = app.uid();
     const [filter, setFilter] = useState('all');
     const all = sel().notifsFor(u);
-    const perm = app.state.session.notifPermission;
+    const perm = notifPermission();
     const dismissed = app.state.ui.dismissedNotifBanner;
     const [tick, setTick] = useState(0);
     const list = all.filter((n) => filter === 'all' || (filter === 'unread' && !n.read) || NOTIF_CAT[n.type] === filter);
@@ -1127,7 +1125,7 @@ S['NTF-02'] = {
   comp: function NotifPrefs() {
     const u = app.uid();
     const st = sel().settings(u);
-    const perm = app.state.session.notifPermission;
+    const perm = notifPermission();
     const isManager = sel()
       .managedClubs(u)
       .some((m) => !m.readOnly);

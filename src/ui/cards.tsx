@@ -14,7 +14,7 @@ const t = (k: string, p?: any) => app.t(k, p);
 const sel = () => app.sel;
 const placeName = (ev) => (ev.placeId ? t('place.' + ev.placeId) : ev.placeText || t('event.placeTbd'));
 const catName = (club) => t('cat.' + club.categoryId);
-const deptYear = (u) => [u.department ? t('dept.' + u.department) : null, u.year ? t('year.' + u.year) : null].filter(Boolean).join(' · ');
+const deptYear = (u) => !u ? '' : [u.department ? t('dept.' + u.department) : null, u.year ? t('year.' + u.year) : null].filter(Boolean).join(' · ');
 const userName = (u) => (u ? u.name : t('common.deletedUser'));
 
 /** starts the join flow for a club from any screen (section 2.4 / SHT-05 rules) */
@@ -247,7 +247,7 @@ function ClubCard({ club, screen = 'CLB-01', grid, highlight }: any) {
         </p>
         <div className="row between gap8">
           <span className="row gap6">
-            <AvatarGroup users={members.slice(0, 3)} size={24} total={club.memberCount} />
+            {members.length ? <AvatarGroup users={members.slice(0, 3)} size={24} total={club.memberCount} /> : <Icon name={club.approvalRequired ? 'shield-check' : 'zap'} size={14} class="c-muted" />}
             <span className="t-caption">{club.approvalRequired ? t('club.type.approval') : t('club.type.instant')}</span>
           </span>
           <span onClick={(e) => e.stopPropagation()}>
@@ -520,7 +520,7 @@ function PollBlock({ post, screen }: any) {
   const data = db.extra['poll:' + post.id];
   const [busy, run] = useBusy();
   useEffect(() => {
-    if (!data) void A.loadPoll(post).catch(() => undefined);
+    if (!data && post.id !== 'preview') void A.loadPoll(post).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post.id, !!data]);
   const counts = (data && data.counts) || {};
@@ -612,7 +612,7 @@ function ImageGrid({ images, post, screen, onOpen }: any) {
       {images.slice(0, 4).map((img, i) => (
         <button
           type="button"
-          key={img.path}
+          key={img.path || img.key}
           aria-label={t('a11y.openImage', { n: i + 1 })}
           data-action={`${screen}.image.${post.id}.${i}`}
           onClick={() => (onOpen ? onOpen(i) : app.ui.openViewer({ images, index: i, post }))}

@@ -1,5 +1,5 @@
 /* Ortak arayüz bileşenleri — tasarım prototipi ui.js'nin React karşılığı. Her etkileşimli öğe data-action taşır. */
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { Children, useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { app, useFocusTrap } from '../app/app';
 import { t } from '../i18n';
 import { cx, dayKey, startOfDay } from '../lib/util';
@@ -539,7 +539,7 @@ function Tile({ leading, title, subtitle, trailing, onClick, action, danger, dis
       </span>
     ) : null,
   ];
-  if (!onClick) return <div className={cx('tile is-plain', inCard && 'in-card', danger && 'is-danger', cls)}>{inner}</div>;
+  if (!onClick) return <div className={cx('tile is-plain', inCard && 'in-card', danger && 'is-danger', cls)}>{Children.toArray(inner)}</div>;
   return (
     <button
       type="button"
@@ -548,7 +548,7 @@ function Tile({ leading, title, subtitle, trailing, onClick, action, danger, dis
       data-action={act(action)}
       onClick={onClick}
     >
-      {inner}
+      {Children.toArray(inner)}
     </button>
   );
 }

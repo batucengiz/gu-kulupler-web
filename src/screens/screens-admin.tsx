@@ -302,9 +302,7 @@ S['ADM-02'] = {
                 <Tile
                   key={c.id}
                   leading={
-                    <span className="emblem is-sm">
-                      <Icon name={c.iconName} size={20} />
-                    </span>
+                    <ClubEmblem club={c} cls="is-sm" size={20} />
                   }
                   title={c.name}
                   subtitle={`${t('role.president')}: ${userName(pres)} · ${t('clubs.card.members', {
