@@ -194,13 +194,14 @@ export async function loadWaitPosition(eventId: string) {
   db.setExtra('waitpos:' + eventId, await R.waitlistPosition(eventId, r.clubId, r.waitlistAt));
 }
 async function reloadEvent(eventId: string) { try { db.putEvents([await E.getEvent(eventId, true)]); } catch { /* sessiz */ } }
-export async function saveEvent(d: E.EventDraft, p: { clubId: string; eventId?: string | null; publish?: boolean; notify?: boolean; cover?: File | Blob | null }) {
+export async function saveEvent(d: E.EventDraft, p: { clubId: string; eventId?: string | null; publish?: boolean; notify?: boolean; cover?: File | Blob | null; clearCover?: boolean }) {
   const { prepareImage, upload, StoragePaths } = await import('../data/repo/storage');
   let id = p.eventId || null;
   if (!id) {
     id = await E.createEvent(d, { clubId: p.clubId, createdBy: uid(), status: 'draft' });
   } else await E.updateEvent(id, d);
   if (p.cover) { const path = await upload(StoragePaths.eventCover(id), await prepareImage(p.cover)); await E.setCoverPath(id, path); }
+  else if (p.clearCover) await E.setCoverPath(id, null);
   if (p.publish) { await E.publish(id, uid()); }
   await reloadEvent(id);
   if (p.publish && p.notify !== false) { const club = sel.club(p.clubId) || (await getClub(p.clubId)); void E.notifyEventNew(id, club, db.events[id], uid()); }

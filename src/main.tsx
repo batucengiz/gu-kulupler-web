@@ -15,7 +15,7 @@ import './screens/sheets';
 import './screens/screens-auth';
 import './screens/screens-clubs';
 import './screens/screens-events';
-// import './screens/screens-manage';
+import './screens/screens-manage';
 // import './screens/screens-profile';
 // import './screens/screens-admin';
 import { Root } from './shell/Root';

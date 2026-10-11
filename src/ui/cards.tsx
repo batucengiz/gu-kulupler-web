@@ -1109,7 +1109,7 @@ function NotificationRow({ n, screen = 'NTF-01' }: any) {
 /* members & applications */
 function MemberRow({ m, screen, onMenu, menuAction, sub, trailing, showRate, clubId }: any) {
   const u = m.user || { id: m.userId, name: m.applicant ? m.applicant.name : t('common.deletedUser'), department: m.applicant?.department, year: m.applicant?.year, avatarSeed: m.applicant?.avatarSeed || m.userId };
-  const rate = showRate ? sel().attendanceRate(clubId || m.clubId, u.id) : null;
+  const rate = showRate ? sel().memberRate(clubId || m.clubId, u.id) : null;
   return (
     <Tile
       leading={<Avatar user={u} size={40} />}

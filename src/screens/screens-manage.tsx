@@ -1,10 +1,7 @@
 import {
-  ACT_CAT,
-  ActivityRow,
   AppBar,
   ApplicationRow,
   Avatar,
-  Badge,
   Banner,
   Button,
   Card,
@@ -21,14 +18,12 @@ import {
   ListEnd,
   ListState,
   MemberRow,
-  MgtHeader,
   MiniLineChart,
   Picker,
   PopMenu,
   Progress,
   Quick,
   RoleBadge,
-  SCANNING,
   SCREENS,
   Scroll,
   Segmented,
@@ -41,7 +36,6 @@ import {
   UserRow,
   app,
   at,
-  coverArtSVG,
   cx,
   dayKey,
   deptYear,
@@ -53,25 +47,49 @@ import {
   useForm,
   useState,
   userName,
+  ClubEmblem,
+  LD,
+  useLoader,
+  A,
+  handleError,
+  db,
+  session,
+  SkeletonList,
+  Fragment,
+  useRef,
+  LIMITS,
+  sx,
+  trLower,
+  slug,
+  Cover,
+  ACT_CAT,
 } from '../ui/kit';
+import { NotFoundInline } from './screens-clubs';
+import { decide, applicantUser } from './sheets';
+import * as M from '../data/repo/memberships';
+import * as R from '../data/repo/rsvps';
+import { loadUsers } from '../data/repo/users';
+import { ui } from '../app/core';
 /* ===== SCREENS: MGT (club management) ===== */
 const t = (k: string, p?: any) => app.t(k, p);
 const S = SCREENS;
 const sel = () => app.sel;
-function useMgt(params) {
+function useMgt(params: any) {
   const u = app.uid();
   const club = sel().club(params.clubId);
+  const clubLoad = useLoader(!club && params.clubId ? LD.clubLoader(params.clubId) : null);
   const readOnly = club ? sel().isAdvisor(club.id, u) : false;
-  const allowed = club && (sel().isManager(club.id, u) || sel().isSuper(u) || readOnly);
+  const allowed = !!club && (sel().isManager(club.id, u) || sel().isSuper(u) || readOnly);
   return {
     u,
-    club,
+    club: club!,
     readOnly,
     allowed,
+    loading: !club && clubLoad.status !== 'error' && session.s.membershipsLoaded !== false,
     guard: () => app.guard(club && club.id),
   };
 }
-function MgtHeader({ club, title, screen, children, back }: any) {
+export function MgtHeader({ club, title, screen, children, back }: any) {
   const u = app.uid();
   const managed = sel().managedClubs(u);
   const role = sel().roleIn(club.id, u) || (sel().isSuper(u) ? 'superadmin' : 'member');
@@ -114,7 +132,14 @@ function MgtHeader({ club, title, screen, children, back }: any) {
     </AppBar>
   );
 }
-function NoAccess({ screen }: any) {
+function NoAccess({ screen, loading }: any) {
+  if (loading)
+    return (
+      <>
+        <AppBar onBack={() => app.nav.back()} backAction={screen + '.back'} title="" />
+        <SkeletonList n={4} variant="card" />
+      </>
+    );
   return (
     <>
       <AppBar onBack={() => app.nav.back()} backAction={screen + '.back'} title="" />
@@ -125,35 +150,44 @@ function NoAccess({ screen }: any) {
     </>
   );
 }
-const ROBanner = ({ readOnly }) => (readOnly ? <Banner kind="readonly" text={t('mgt.readOnlyBanner')} /> : null);
-MgtHeader = MgtHeader;
+const ROBanner = ({ readOnly }: any) => (readOnly ? <Banner kind="readonly" text={t('mgt.readOnlyBanner')} /> : null);
 
 /* MGT-01 */
 S['MGT-01'] = {
   tab: 'clubs',
   title: 'mgt.title',
   comp: function Panel({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
-    if (!allowed) return <NoAccess screen="MGT-01" />;
-    const k = sel().kpis(club.id);
-    const growth = sel().memberGrowth(club.id);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
+    const dash = useLoader(allowed ? LD.mgtDashLoader(club.id) : null);
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-01" />;
+    const x = db.extra['mgt:' + club.id] || null;
+    const k = {
+      members: club.memberCount,
+      newMembers: x ? x.newMembers : 0,
+      pending: x ? x.pending : sel().pendingApps(club.id).length,
+      upcoming: sel()
+        .clubEvents(club.id)
+        .filter((e) => e.status === 'published' && e.startsAt > Date.now()).length,
+      announcements: x ? x.announcements : 0,
+    };
+    const growth: number[] = x ? x.growth : [];
     const used = sel().dailyAnnouncements(club.id);
+    const quota = LIMITS.announcementDailyLimit;
     const upcoming = sel()
       .clubEvents(club.id)
       .filter((e) => e.status === 'published' && e.startsAt > Date.now())
       .sort((a, b) => a.startsAt - b.startsAt)
       .slice(0, 2);
-    const acts = sel().activityOf(club.id).slice(0, 5);
-    const members = sel()
-      .clubMembers(club.id)
-      .filter((m) => m.role === 'member');
+    const acts: any[] = x ? x.recent.slice(0, 5) : [];
+    const noMembers = club.memberCount <= 1;
+    void u;
     const ro = () => app.toast('TST-26');
-    const go = (s, p) => () =>
+    const go = (s: string, p?: any) => () =>
       app.nav.push(s, {
         clubId: club.id,
         ...(p || {}),
       });
-    const write = (fn) => (readOnly ? ro : fn);
+    const write = (fn: () => void) => (readOnly ? ro : fn);
     const labels = growth.map((_, i) =>
       t('mgt.weekN', {
         n: i - 7,
@@ -165,7 +199,7 @@ S['MGT-01'] = {
         <ROBanner readOnly={readOnly} />
         <Scroll routeKey={route.key}>
           <div className="col gap20 px16 pb24">
-            {!members.length && !readOnly ? (
+            {x && noMembers && !readOnly ? (
               <Card
                 muted
                 class="card-body col gap8"
@@ -232,12 +266,9 @@ S['MGT-01'] = {
                   label={t('mgt.quick.announce')}
                   action="MGT-01.quick.announce"
                   onClick={write(() => {
-                    app.forms['compose-' + club.id] = {
-                      ...(app.forms['compose-' + club.id] || {}),
-                      type: 'announcement',
-                    };
                     app.nav.push('FED-03', {
                       clubId: club.id,
+                      type: 'announcement',
                     });
                   })}
                 />
@@ -269,19 +300,21 @@ S['MGT-01'] = {
                 <span className="t-label-l c-heading">{t('mgt.growth')}</span>
                 <span className="t-caption">{t('mgt.weeks8')}</span>
               </div>
-              <MiniLineChart data={growth} labels={labels} action="MGT-01.chart.point" />
+              {growth.length ? <MiniLineChart data={growth} labels={labels} action="MGT-01.chart.point" /> : <SkeletonList n={1} />}
             </Card>
             <Card class="card-body col gap8">
               <div className="row between">
                 <span className="t-label-l c-heading">{t('compose.dailyQuota')}</span>
-                <span className="t-caption tnum">{used}/2</span>
+                <span className="t-caption tnum">
+                  {used}/{quota}
+                </span>
               </div>
-              <Progress value={used} max={2} kind={used >= 2 ? 'warning' : undefined} label={t('compose.dailyQuota')} />
+              <Progress value={used} max={quota} kind={used >= quota ? 'warning' : undefined} label={t('compose.dailyQuota')} />
               <span className="t-caption">
-                {used >= 2
+                {used >= quota
                   ? t('compose.limitReached')
                   : t('mgt.quotaLeft', {
-                      count: 2 - used,
+                      count: quota - used,
                     })}
               </span>
             </Card>
@@ -319,9 +352,9 @@ S['MGT-01'] = {
                           {placeName(e)}
                         </span>
                         <span className="row gap8">
-                          <Progress value={sel().registered(e.id).length} max={e.capacity || 1} thin label={t('event.capacity')} />
+                          <Progress value={sel().registeredCount(e)} max={e.capacity || Math.max(1, sel().registeredCount(e))} thin label={t('event.capacity')} />
                           <span className="t-caption tnum">
-                            {sel().registered(e.id).length}
+                            {sel().registeredCount(e)}
                             {e.capacity != null ? '/' + e.capacity : ''}
                           </span>
                         </span>
@@ -340,8 +373,14 @@ S['MGT-01'] = {
                 <Button size="sm" variant="text" label={t('common.all')} action="MGT-01.activityAll" onClick={go('MGT-10')} />
               </div>
               <Card>
-                {acts.map((a, i) => [i ? <div className="divider" /> : null, <ActivityRow key={a.id} a={a} screen="MGT-01" club={club} />])}
-                {!acts.length ? <p className="t-body-s c-muted p16">{t('activity.empty')}</p> : null}
+                {acts.map((a, i) => (
+                  <Fragment key={a.id}>
+                    {i ? <div className="divider" /> : null}
+                    <ActivityRow a={a} screen="MGT-01" club={club} />
+                  </Fragment>
+                ))}
+                {!acts.length && dash.status !== 'loading' ? <p className="t-body-s c-muted p16">{t('activity.empty')}</p> : null}
+                {!x && dash.status === 'loading' ? <SkeletonList n={3} /> : null}
               </Card>
             </div>
           </div>
@@ -350,7 +389,7 @@ S['MGT-01'] = {
     );
   },
 };
-const ACT_ICON = {
+const ACT_ICON: Record<string, string> = {
   application_received: 'user-plus',
   application_approved: 'user-check',
   application_rejected: 'user-x',
@@ -365,41 +404,26 @@ const ACT_ICON = {
   poll: 'chart-column',
   settings_changed: 'settings',
 };
-const ACT_CAT = {
-  application_received: 'membership',
-  application_approved: 'membership',
-  application_rejected: 'membership',
-  member_joined: 'membership',
-  member_left: 'membership',
-  member_removed: 'membership',
-  role_changed: 'membership',
-  event_published: 'event',
-  event_cancelled: 'event',
-  post_created: 'content',
-  announcement: 'content',
-  poll: 'content',
-  settings_changed: 'settings',
-};
-function ActivityRow({ a, screen, club }: any) {
+export function ActivityRow({ a, screen, club }: any) {
   const actor = sel().user(a.actorId);
-  const target = a.refs.userId ? sel().user(a.refs.userId) : null;
-  const ev = a.refs.eventId ? sel().event(a.refs.eventId) : null;
-  const post = a.refs.postId ? sel().post(a.refs.postId) : null;
+  const refs = a.refs || {};
+  const target = refs.userId ? sel().user(refs.userId) : null;
+  const ev = refs.eventId ? sel().event(refs.eventId) : null;
   const text = t('activity.' + a.kind, {
     actor: userName(actor),
     user: userName(target),
-    event: ev ? ev.title : '',
-    role: a.refs.role ? t('role.' + a.refs.role) : '',
+    event: ev ? ev.title : refs.eventTitle || '',
+    role: refs.role ? t('role.' + refs.role) : '',
   });
   const go = () => {
-    if (ev)
+    if (refs.eventId)
       app.nav.push('EVT-02', {
-        id: ev.id,
+        id: refs.eventId,
       });
-    else if (post)
+    else if (refs.postId)
       app.nav.push('FED-02', {
         clubId: club.id,
-        postId: post.id,
+        postId: refs.postId,
       });
     else if (a.kind.startsWith('application'))
       app.nav.push('MGT-02', {
@@ -434,102 +458,96 @@ function ActivityRow({ a, screen, club }: any) {
     />
   );
 }
-ActivityRow = ActivityRow;
-ACT_CAT = ACT_CAT;
+
+/** Katılımcı listesini canlı dinle (okutma anında listeye yansır). */
+function useParticipantsLive(eventId: string | null, clubId: string | null): 'loading' | 'ok' | 'error' {
+  const [st, setSt] = useState<'loading' | 'ok' | 'error'>('loading');
+  useEffect(() => {
+    if (!eventId || !clubId) return;
+    return R.watchParticipants(
+      eventId,
+      clubId,
+      (list) => {
+        Object.keys(db.rsvps).forEach((k) => {
+          if (db.rsvps[k].eventId === eventId) delete db.rsvps[k];
+        });
+        db.putRsvps(list);
+        void loadUsers(list.map((r) => r.userId));
+        setSt('ok');
+      },
+      () => setSt('error'),
+    );
+  }, [eventId, clubId]);
+  return st;
+}
 
 /* MGT-02 applications */
 S['MGT-02'] = {
   tab: 'clubs',
   title: 'applications.title',
   comp: function Applications({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const [tab, setTab] = useState(params.tab || 'pending');
     const [q, setQ] = useState('');
     const [desc, setDesc] = useState(true);
     const [selecting, setSelecting] = useState(false);
     const [selected, setSelected] = useState<any[]>([]);
     const [leaving, setLeaving] = useState<any[]>([]);
-    if (!allowed) return <NoAccess screen="MGT-02" />;
-    const pending = sel().pendingApps(club.id);
-    const list = (tab === 'pending' ? pending : tab === 'approved' ? sel().approvedApps(club.id) : sel().rejectedApps(club.id))
-      .filter((m) => !q || m.user.name.toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
-      .sort((a, b) => (desc ? 1 : -1) * ((b.appliedAt || 0) - (a.appliedAt || 0)));
-    const stale = (m) => {
-      if (m.stale) {
-        app.openDialog('DLG-18', {
-          result: t('status.rejected'),
-          onOk: () => {
-            app.dispatch('membership.reject', {
-              clubId: club.id,
-              userId: m.userId,
-              actorId: 'u_other',
-              reason: 'quota',
-            });
-          },
-        });
-        return true;
-      }
-      return false;
-    };
-    const approve = (m) => {
+    const appsLoad = useLoader(allowed ? LD.appsLoader(club.id) : null);
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-02" />;
+    void u;
+    const withUser = (m: any) => ({ ...m, user: applicantUser(m) });
+    const pending = sel().pendingApps(club.id).map(withUser);
+    const list = (tab === 'pending' ? pending : (tab === 'approved' ? sel().approvedApps(club.id) : sel().rejectedApps(club.id)).map(withUser))
+      .filter((m) => !q || trLower(m.user.name).includes(trLower(q)))
+      .sort((a, b) => (desc ? 1 : -1) * ((tab === 'pending' ? b.appliedAt - a.appliedAt : (b.decidedAt || 0) - (a.decidedAt || 0)) || 0));
+    const approve = (m: any) => {
       if (!app.guard(club.id)) return;
-      if (stale(m)) return;
-      const snap = app.store.get();
       setLeaving((l) => [...l, m.userId]);
-      setTimeout(() => {
+      void decide(club.id, m.userId, () => A.approve(club.id, m.userId)).then((ok) => {
         setLeaving((l) => l.filter((x) => x !== m.userId));
-        app.dispatch('membership.approve', {
-          clubId: club.id,
-          userId: m.userId,
-          actorId: u,
-        });
-        app.toast('TST-27', {
-          name: m.user.name,
-          undo: () => app.store.restore(snap),
-        });
-      }, 250);
+        if (ok)
+          app.toast('TST-27', {
+            name: m.user.name,
+            undo: () => A.undoDecision(club.id, m.userId).catch(handleError),
+          });
+      });
     };
-    const reject = (m) => {
+    const reject = (m: any) => {
       if (!app.guard(club.id)) return;
-      if (stale(m)) return;
       app.openSheet('SHT-20', {
         clubId: club.id,
         userId: m.userId,
       });
     };
-    const bulk = (kind) => {
+    const bulk = (kind: 'approve' | 'reject') => {
       if (!app.guard(club.id)) return;
       app.openDialog('DLG-17', {
         kind,
         count: selected.length,
-        onConfirm: () => {
-          const snap = app.store.get();
-          selected.forEach((uid) =>
-            app.dispatch(kind === 'approve' ? 'membership.approve' : 'membership.reject', {
-              clubId: club.id,
-              userId: uid,
-              actorId: u,
-              reason: kind === 'reject' ? 'quota' : undefined,
-            }),
-          );
+        onConfirm: async () => {
+          const ids = selected.slice();
+          const r = await A.bulkDecide(club.id, ids, kind === 'approve', 'other');
           app.closeDialog();
-          app.toast(kind === 'approve' ? 'TST-27' : 'TST-28', {
-            name: t('applications.nApplicants', {
-              count: selected.length,
-            }),
-            undo: () => app.store.restore(snap),
-          });
           setSelected([]);
           setSelecting(false);
+          if (r.conflicted || r.failed) {
+            void appsLoad.reload();
+            app.toast('TST-X40', { text: t('web.bulk.partial', { ok: r.succeeded, total: ids.length }) });
+          } else
+            app.toast(kind === 'approve' ? 'TST-27' : 'TST-28', {
+              name: t('applications.nApplicants', {
+                count: r.succeeded,
+              }),
+            });
         },
       });
     };
-    const toggleSel = (id) => {
+    const toggleSel = (id: string) => {
       setSelecting(true);
       setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
     };
-    return [
-      selecting ? (
+    return <>{selecting ? (
         <AppBar
           onBack={() => {
             setSelecting(false);
@@ -573,9 +591,7 @@ S['MGT-02'] = {
         <MgtHeader club={club} title={t('applications.title')} screen="MGT-02">
           <IconButton icon="arrow-up-down" label={t('common.sort')} action="MGT-02.sort" onClick={() => setDesc(!desc)} />
         </MgtHeader>
-      ),
-      <ROBanner readOnly={readOnly} />,
-      !club.applicationsOpen ? (
+      )}{<ROBanner readOnly={readOnly} />}{!club.applicationsOpen ? (
         <Banner kind="info" icon="lock" text={t('applications.closedBanner')}>
           <span
             style={{
@@ -588,24 +604,20 @@ S['MGT-02'] = {
               checked={false}
               onChange={() => {
                 if (!app.guard(club.id)) return;
-                app.dispatch('club.update', {
-                  clubId: club.id,
-                  patch: {
-                    applicationsOpen: true,
-                  },
-                  actorId: u,
-                });
-                app.toast('TST-54', {
-                  open: true,
-                });
+                A.setApplicationsOpen(club.id, true)
+                  .then(() =>
+                    app.toast('TST-54', {
+                      open: true,
+                    }),
+                  )
+                  .catch(handleError);
               }}
               action="MGT-02.toggleOpen"
               label={t('applications.openToggle')}
             />
           </span>
         </Banner>
-      ) : null,
-      <Tabs
+      ) : null}{<Tabs
         tabs={[
           {
             id: 'pending',
@@ -628,12 +640,12 @@ S['MGT-02'] = {
           setSelected([]);
         }}
         action="MGT-02.tab"
-      />,
-      <div className="px16 py8">
+      />}{<div className="px16 py8">
         <Input icon="search" placeholder={t('members.search')} value={q} onInput={setQ} action="MGT-02.search" ariaLabel={t('members.search')} />
-      </div>,
-      <Scroll routeKey={route.key}>
+      </div>}{<Scroll routeKey={route.key} onRefresh={appsLoad.reload} refreshAction="MGT-02.refresh">
         <ListState
+          status={appsLoad.status !== 'ok' && list.length ? 'ok' : appsLoad.status}
+          onRetry={appsLoad.reload}
           n={5}
           emptyProps={{
             illustration: 'empty-applications',
@@ -641,9 +653,7 @@ S['MGT-02'] = {
           }}
         >
           {list.length ? (
-            [
-              tab === 'pending' ? <p className="t-caption px16 pb16">{t('applications.hint')}</p> : null,
-              <div className="col">
+            <>{tab === 'pending' ? <p className="t-caption px16 pb16">{t('applications.hint')}</p> : null}{<div className="col">
                 {list.map((m) =>
                   tab === 'pending' ? (
                     <div
@@ -690,15 +700,12 @@ S['MGT-02'] = {
                     />
                   ),
                 )}
-              </div>,
-              <ListEnd />,
-            ]
+              </div>}{<ListEnd />}</>
           ) : (
             <EmptyState illustration="empty-applications" title={t('applications.empty.' + tab)} />
           )}
         </ListState>
-      </Scroll>,
-    ];
+      </Scroll>}</>;
   },
 };
 
@@ -707,29 +714,35 @@ S['MGT-03'] = {
   tab: 'clubs',
   title: 'mgtMembers.title',
   comp: function MgtMembers({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const [q, setQ] = useState('');
     const [role, setRole] = useState('all');
     const [sort, setSort] = useState('name');
     const [menu, setMenu] = useState<any>(null);
-    if (!allowed) return <NoAccess screen="MGT-03" />;
+    const [exporting, runExport] = useBusy();
+    const membersLoad = useLoader(allowed ? LD.allMembersLoader(club.id) : null);
+    useLoader(allowed ? LD.mgtRatesLoader(club.id) : null);
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-03" />;
     const isPres = sel().isPresident(club.id, u) || sel().isSuper(u);
     const list = sel()
       .clubMembers(club.id)
-      .filter((m) => !q || m.user.name.toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
+      .map((m) => ({ ...m, user: (m.user || applicantUser(m)) as any }))
+      .filter((m) => !q || trLower(m.user.name).includes(trLower(q)))
       .filter((m) => role === 'all' || m.role === role)
       .sort((a, b) =>
         sort === 'name'
           ? a.user.name.localeCompare(b.user.name, 'tr')
           : sort === 'joined'
-            ? (b.decidedAt || 0) - (a.decidedAt || 0)
-            : (sel().attendanceRate(club.id, b.userId) || 0) - (sel().attendanceRate(club.id, a.userId) || 0),
+            ? (b.decidedAt || b.appliedAt || 0) - (a.decidedAt || a.appliedAt || 0)
+            : (sel().memberRate(club.id, b.userId) ?? -1) - (sel().memberRate(club.id, a.userId) ?? -1),
       );
-    const exportCsv = () => {
+    const exportCsv = () =>
+      runExport(async () => {
+      const emails = await Promise.all(list.map((m) => M.readContact(club.id, m.userId).catch(() => null)));
       const rows = [['ad', 'eposta', 'bolum', 'sinif', 'rol', 'katilim_tarihi']].concat(
-        list.map((m) => [
+        list.map((m, i) => [
           m.user.name,
-          m.user.email,
+          emails[i] || '',
           m.user.department ? t('dept.' + m.user.department) : '',
           m.user.year ? t('year.' + m.user.year) : '',
           t('role.' + m.role),
@@ -738,20 +751,16 @@ S['MGT-03'] = {
       );
       downloadText(
         '\ufeff' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n'),
-        'uyeler.csv',
+        slug(club.name) + '-uyeler.csv',
         'text/csv;charset=utf-8',
       );
       app.toast('TST-29');
-    };
-    return [
-      <MgtHeader club={club} title={t('mgtMembers.title')} screen="MGT-03">
+      });
+    return <>{<MgtHeader club={club} title={t('mgtMembers.title')} screen="MGT-03">
         <IconButton icon="more-vertical" label={t('a11y.more')} action="MGT-03.menu" onClick={() => setMenu('top')} />
-      </MgtHeader>,
-      <ROBanner readOnly={readOnly} />,
-      <div className="px16 py8">
+      </MgtHeader>}{<ROBanner readOnly={readOnly} />}{<div className="px16 py8">
         <Input icon="search" placeholder={t('members.search')} value={q} onInput={setQ} action="MGT-03.search" ariaLabel={t('members.search')} />
-      </div>,
-      <div className="hscroll pb16">
+      </div>}{<div className="hscroll pb16">
         {['all', 'president', 'board', 'advisor', 'member'].map((r) => (
           <Chip
             key={r}
@@ -761,17 +770,17 @@ S['MGT-03'] = {
             onClick={() => setRole(r)}
           />
         ))}
-      </div>,
-      <div className="row between px16 pb16">
+      </div>}{<div className="row between px16 pb16">
         <span className="t-label-l c-sec tnum">
           {t('members.total', {
             count: list.length,
           })}
         </span>
         <Button size="sm" variant="outline" icon="arrow-up-down" label={t('mgtMembers.sort.' + sort)} action="MGT-03.sort" onClick={() => setMenu('sort')} />
-      </div>,
-      <Scroll routeKey={route.key}>
+      </div>}{<Scroll routeKey={route.key} onRefresh={membersLoad.reload} refreshAction="MGT-03.refresh">
         <ListState
+          status={membersLoad.status !== 'ok' && list.length ? 'ok' : membersLoad.status}
+          onRetry={membersLoad.reload}
           n={6}
           emptyProps={{
             illustration: 'empty-clubs',
@@ -779,8 +788,7 @@ S['MGT-03'] = {
           }}
         >
           {list.length ? (
-            [
-              <div className="col">
+            <>{<div className="col">
                 {list.map((m) => (
                   <MemberRow
                     key={m.userId}
@@ -802,8 +810,7 @@ S['MGT-03'] = {
                     }
                   />
                 ))}
-              </div>,
-              isPres ? (
+              </div>}{isPres ? (
                 <div className="px16 pt16">
                   <Card class="card-body col gap8">
                     <span className="t-label-l c-heading row gap6">
@@ -819,7 +826,7 @@ S['MGT-03'] = {
                         app.openSheet('SHT-25', {
                           mode: 'transfer',
                           clubId: club.id,
-                          onSelect: (uid) => {
+                          onSelect: (uid: string) => {
                             app.closeSheet();
                             app.openDialog('DLG-21', {
                               clubId: club.id,
@@ -831,18 +838,15 @@ S['MGT-03'] = {
                     />
                   </Card>
                 </div>
-              ) : null,
-              <ListEnd />,
-            ]
+              ) : null}{<ListEnd />}</>
           ) : (
             <EmptyState illustration="empty-clubs" title={t('members.noResults')} />
           )}
         </ListState>
-      </Scroll>,
-      menu === 'top' ? (
+      </Scroll>}{menu === 'top' ? (
         <PopMenu id="MGT-03" onClose={() => setMenu(null)}>
           <Tile
-            title={t('mgtMembers.export')}
+            title={exporting ? t('common.loading') : t('mgtMembers.export')}
             leading={<Icon name="download" size={20} />}
             action="MGT-03.export"
             onClick={() => {
@@ -851,8 +855,7 @@ S['MGT-03'] = {
             }}
           />
         </PopMenu>
-      ) : null,
-      menu === 'sort' ? (
+      ) : null}{menu === 'sort' ? (
         <PopMenu id="MGT-03" onClose={() => setMenu(null)}>
           {['name', 'joined', 'rate'].map((s) => (
             <Tile
@@ -867,8 +870,7 @@ S['MGT-03'] = {
             />
           ))}
         </PopMenu>
-      ) : null,
-    ];
+      ) : null}</>;
   },
 };
 
@@ -877,9 +879,11 @@ S['MGT-04'] = {
   tab: 'clubs',
   title: 'mgtEvents.title',
   comp: function MgtEvents({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const [tab, setTab] = useState(params.tab || 'published');
-    if (!allowed) return <NoAccess screen="MGT-04" />;
+    const evLoad = useLoader(allowed ? LD.clubEventsLoader(club.id) : null);
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-04" />;
+    void u;
     const evs = sel()
       .clubEvents(club.id)
       .filter((e) =>
@@ -892,10 +896,7 @@ S['MGT-04'] = {
               : e.status === 'cancelled',
       )
       .sort((a, b) => (tab === 'past' ? b.startsAt - a.startsAt : a.startsAt - b.startsAt));
-    return [
-      <MgtHeader club={club} title={t('mgtEvents.title')} screen="MGT-04" />,
-      <ROBanner readOnly={readOnly} />,
-      <div className="px16 pb16">
+    return <>{<MgtHeader club={club} title={t('mgtEvents.title')} screen="MGT-04" />}{<ROBanner readOnly={readOnly} />}{<div className="px16 pb16">
         <Segmented
           options={[
             {
@@ -919,9 +920,10 @@ S['MGT-04'] = {
           onChange={setTab}
           action="MGT-04.tab"
         />
-      </div>,
-      <Scroll routeKey={route.key}>
+      </div>}{<Scroll routeKey={route.key} onRefresh={evLoad.reload} refreshAction="MGT-04.refresh">
         <ListState
+          status={evLoad.status !== 'ok' && evs.length ? 'ok' : evLoad.status}
+          onRetry={evLoad.reload}
           n={4}
           emptyProps={{
             illustration: 'empty-events',
@@ -934,7 +936,7 @@ S['MGT-04'] = {
                 key={e.id}
                 leading={<DateBadge ts={e.startsAt} />}
                 title={e.title}
-                subtitle={`${app.fmt.dateTime(e.startsAt)} · ${e.capacity != null ? `${sel().registered(e.id).length}/${e.capacity}` : t('event.unlimited')}`}
+                subtitle={`${app.fmt.dateTime(e.startsAt)} · ${e.capacity != null ? `${sel().registeredCount(e)}/${e.capacity}` : t('event.unlimited')}`}
                 sub2={
                   <span className="row gap6">
                     <StatusBadge
@@ -979,8 +981,7 @@ S['MGT-04'] = {
             />
           )}
         </ListState>
-      </Scroll>,
-      readOnly ? null : (
+      </Scroll>}{readOnly ? null : (
         <button
           type="button"
           className="fab"
@@ -994,8 +995,7 @@ S['MGT-04'] = {
           <Icon name="plus" size={22} />
           {t('mgtEvents.create')}
         </button>
-      ),
-    ];
+      )}</>;
   },
 };
 
@@ -1004,8 +1004,16 @@ S['MGT-05'] = {
   tab: 'clubs',
   title: 'eventForm.title',
   comp: function EventForm({ params }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const editing = params.eventId ? sel().event(params.eventId) : null;
+    const [busy, run] = useBusy();
+    const evLoad = useLoader(params.eventId ? LD.eventLoader(params.eventId) : null);
+    if (params.eventId && !editing) {
+      if (evLoad.status === 'error') return <NotFoundInline />;
+      return <NoAccess loading screen="MGT-05" />;
+    }
+    if (!allowed || readOnly) return <NoAccess loading={loading} screen="MGT-05" />;
+    if (editing && (editing.isDeleted || editing.clubId !== club.id)) return <NotFoundInline />;
     const init = () =>
       editing
         ? {
@@ -1017,6 +1025,7 @@ S['MGT-05'] = {
               palette: editing.coverPalette,
               pattern: editing.coverPattern,
               seed: editing.coverSeed,
+              path: editing.coverPath,
             },
             startsAt: editing.startsAt,
             endsAt: editing.endsAt,
@@ -1041,6 +1050,7 @@ S['MGT-05'] = {
             },
             startsAt: at(7, 18, 0),
             endsAt: at(7, 20, 0),
+            registrationOpen: true,
             placeId: null,
             placeText: null,
             capacity: 40,
@@ -1051,14 +1061,12 @@ S['MGT-05'] = {
             dirty: false,
           };
     const [f, set, reset] = useForm('eventForm-' + (params.eventId || params.clubId), init);
-    const [busy, run] = useBusy();
-    if (!allowed || readOnly) return <NoAccess screen="MGT-05" />;
-    const upd = (p) =>
+    const upd = (p: any) =>
       set({
         ...p,
         dirty: true,
       });
-    const registered = editing ? sel().registered(editing.id).length : 0;
+    const registered = editing ? sel().registeredCount(editing) : 0;
     const conflicts = sel()
       .clubEvents(club.id)
       .filter((e) => e.id !== (editing && editing.id) && e.status === 'published' && e.startsAt < f.endsAt && e.endsAt > f.startsAt).length;
@@ -1066,11 +1074,13 @@ S['MGT-05'] = {
       const e: any = {};
       if (f.step === 1) {
         if (!f.title.trim()) e.title = t('auth.err.required');
+        if (f.title.trim().length > LIMITS.eventTitleMax) e.title = t('auth.err.required');
       }
       if (f.step === 2) {
         if (f.startsAt < Date.now() && !editing) e.start = t('eventForm.err.future');
         if (f.endsAt <= f.startsAt) e.end = t('eventForm.err.endAfter');
         if (!f.placeId && !f.placeText) e.place = t('auth.err.required');
+        if (!f.unlimited && (!f.capacity || f.capacity < 1)) e.capacity = t('auth.err.required');
         if (!f.unlimited && editing && editing.status === 'published' && f.capacity < registered)
           e.capacity = t('eventForm.err.capacity', {
             count: registered,
@@ -1101,8 +1111,6 @@ S['MGT-05'] = {
       }
     };
     const payload = () => ({
-      id: editing ? editing.id : undefined,
-      clubId: club.id,
       title: f.title.trim(),
       desc: f.desc.trim(),
       type: f.type,
@@ -1116,41 +1124,36 @@ S['MGT-05'] = {
       coverPalette: f.cover.palette,
       coverPattern: f.cover.pattern,
       coverSeed: f.cover.seed,
-      createdBy: editing ? editing.createdBy : u,
+      registrationOpen: f.registrationOpen !== false,
     });
-    const saveDraft = () => {
-      if (!app.guard(club.id)) return;
-      app.dispatch('event.save', {
-        event: {
-          ...payload(),
-          status: editing ? editing.status : 'draft',
-        },
+    void u;
+    const coverOpts = () => ({ cover: f.cover.file || null, clearCover: !f.cover.file && !f.cover.path && !!(editing && editing.coverPath) });
+    const saveDraft = () =>
+      run(async () => {
+        if (!app.guard(club.id)) return;
+        await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : null, ...coverOpts() });
+        reset();
+        app.toast('TST-13');
+        app.nav.popTo('MGT-04') ||
+          app.nav.replace('MGT-04', {
+            clubId: club.id,
+            tab: editing && editing.status !== 'draft' ? 'published' : 'draft',
+          });
       });
-      reset();
-      app.toast('TST-13');
-      app.nav.popTo('MGT-04') ||
-        app.nav.replace('MGT-04', {
-          clubId: club.id,
-          tab: 'draft',
-        });
-    };
     const publish = () => {
       if (!app.guard(club.id)) return;
-      const members = sel().clubMembers(club.id).length;
+      if (editing && editing.status === 'published')
+        return run(async () => {
+          await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing.id, ...coverOpts() });
+          reset();
+          app.nav.popTo('MGT-04') || app.nav.replace('MGT-04', { clubId: club.id });
+          app.toast('TST-30', { action: () => app.nav.push('EVT-02', { id: editing.id }) });
+        });
       app.openDialog('DLG-22', {
-        count: members,
-        onConfirm: (notifyMembers) =>
+        count: Math.max(0, club.memberCount - 1),
+        onConfirm: (notifyMembers: boolean) =>
           run(async () => {
-            await app.api();
-            const id = app.dispatch('event.save', {
-              event: payload(),
-            });
-            if (!editing || editing.status !== 'published')
-              app.dispatch('event.publish', {
-                eventId: id,
-                notifyMembers,
-                actorId: u,
-              });
+            const id = await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : null, publish: true, notify: notifyMembers, ...coverOpts() });
             app.closeDialog();
             reset();
             app.nav.popTo('MGT-04') ||
@@ -1166,27 +1169,27 @@ S['MGT-05'] = {
           }),
       });
     };
-    const setDate = (key, ts) => {
+    const setDate = (key: string, ts: number) => {
       const cur = new Date(f[key]);
       const d = new Date(ts);
       d.setHours(cur.getHours(), cur.getMinutes(), 0, 0);
-      const patch = {
+      const patch: any = {
         [key]: d.getTime(),
       };
       if (key === 'startsAt' && d.getTime() >= f.endsAt) patch.endsAt = d.getTime() + 2 * 36e5;
       upd(patch);
     };
-    const setTime = (key, hhmm) => {
+    const setTime = (key: string, hhmm: string) => {
       const [h, m] = hhmm.split(':').map(Number);
       const d = new Date(f[key]);
       d.setHours(h, m, 0, 0);
-      const patch = {
+      const patch: any = {
         [key]: d.getTime(),
       };
       if (key === 'startsAt' && d.getTime() >= f.endsAt) patch.endsAt = d.getTime() + 2 * 36e5;
       upd(patch);
     };
-    const preview = {
+    const preview: any = {
       id: 'preview',
       clubId: club.id,
       title: f.title || t('eventForm.untitled'),
@@ -1202,7 +1205,11 @@ S['MGT-05'] = {
       coverSeed: f.cover.seed,
       coverPalette: f.cover.palette,
       coverPattern: f.cover.pattern,
+      coverPath: f.cover.path || null,
       registrationOpen: true,
+      goingCount: 0,
+      attendedCount: 0,
+      waitlistCount: 0,
     };
     return (
       <>
@@ -1238,23 +1245,19 @@ S['MGT-05'] = {
                     app.openSheet('SHT-31', {
                       value: f.cover,
                       icon: club.iconName,
-                      onSelect: (c) =>
+                      onSelect: (c: any) =>
                         upd({
-                          cover: c,
+                          cover: c.file ? { ...c, path: null, url: URL.createObjectURL(c.file) } : { ...c, path: null, file: null, url: null },
                         }),
                     })
                   }
                   aria-label={t('eventForm.cover')}
                 >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: '0',
-                    }}
-                    dangerouslySetInnerHTML={{
-                      __html: coverArtSVG(f.cover.seed, club.iconName, f.cover.palette, f.cover.pattern),
-                    }}
-                  />
+                  {f.cover.url ? (
+                    <img src={f.cover.url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0 }} />
+                  )}
                   <span
                     className="btn btn-sm btn-outline"
                     style={{
@@ -1316,8 +1319,7 @@ S['MGT-05'] = {
               </>
             ) : null}
             {f.step === 2
-              ? [
-                  <div className="row gap8">
+              ? <>{<div className="row gap8">
                     <div className="flex1">
                       <Picker
                         label={t('eventForm.startDate')}
@@ -1352,8 +1354,7 @@ S['MGT-05'] = {
                         }
                       />
                     </div>
-                  </div>,
-                  <div className="row gap8">
+                  </div>}{<div className="row gap8">
                     <div className="flex1">
                       <Picker
                         label={t('eventForm.endDate')}
@@ -1388,8 +1389,7 @@ S['MGT-05'] = {
                         }
                       />
                     </div>
-                  </div>,
-                  conflicts ? (
+                  </div>}{conflicts ? (
                     <Banner
                       kind="info"
                       icon="calendar-days"
@@ -1398,8 +1398,7 @@ S['MGT-05'] = {
                       })}
                       card
                     />
-                  ) : null,
-                  <Picker
+                  ) : null}{<Picker
                     label={t('eventForm.place')}
                     icon="map-pin"
                     value={f.placeId ? t('place.' + f.placeId) : f.placeText || ''}
@@ -1421,8 +1420,7 @@ S['MGT-05'] = {
                           }),
                       })
                     }
-                  />,
-                  <div className="col gap8">
+                  />}{<div className="col gap8">
                     <div className="row between">
                       <span className="field-label">{t('eventForm.capacity')}</span>
                       <span className="row gap8">
@@ -1440,8 +1438,7 @@ S['MGT-05'] = {
                       </span>
                     </div>
                     {!f.unlimited
-                      ? [
-                          <div
+                      ? <>{<div
                             className="row gap12"
                             style={{
                               justifyContent: 'center',
@@ -1482,8 +1479,7 @@ S['MGT-05'] = {
                                 background: 'var(--bg-surface-muted)',
                               }}
                             />
-                          </div>,
-                          f.errors.capacity ? (
+                          </div>}{f.errors.capacity ? (
                             <div className="field-help is-error" role="alert">
                               <Icon name="triangle-alert" size={14} />
                               <span>{f.errors.capacity}</span>
@@ -1494,11 +1490,9 @@ S['MGT-05'] = {
                                 count: registered,
                               })}
                             </span>
-                          ) : null,
-                        ]
+                          ) : null}</>
                       : null}
-                  </div>,
-                  <div className="col gap8">
+                  </div>}{<div className="col gap8">
                     <span className="field-label">{t('eventForm.visibility')}</span>
                     <Segmented
                       options={[
@@ -1522,8 +1516,7 @@ S['MGT-05'] = {
                       action="MGT-05.visibility"
                     />
                     <span className="t-caption">{t('eventForm.visibilityHelp.' + f.visibility)}</span>
-                  </div>,
-                  <div className="row between">
+                  </div>}{<div className="row between">
                     <div className="col">
                       <span className="t-body-m">{t('eventForm.autoReminder')}</span>
                       <span className="t-caption">{t('eventForm.autoReminderHelp')}</span>
@@ -1538,8 +1531,7 @@ S['MGT-05'] = {
                       action="MGT-05.autoReminder"
                       label={t('eventForm.autoReminder')}
                     />
-                  </div>,
-                ]
+                  </div>}</>
               : null}
             {f.step === 3 ? (
               <>
@@ -1554,10 +1546,8 @@ S['MGT-05'] = {
                     [t('eventForm.place'), f.placeId ? t('place.' + f.placeId) : f.placeText],
                     [t('eventForm.capacity'), f.unlimited ? t('eventForm.unlimited') : String(f.capacity)],
                     [t('eventForm.visibility'), f.visibility === 'public' ? t('event.visibility.public') : t('event.visibility.members')],
-                  ].map(([k, v], i) => [
-                    i ? <div className="divider" /> : null,
-                    <div
-                      key={k}
+                  ].map(([k, v], i) => <Fragment key={k}>{i ? <div className="divider" /> : null}{<div
+                      
                       className="row between"
                       style={{
                         padding: '10px 16px',
@@ -1572,8 +1562,7 @@ S['MGT-05'] = {
                       >
                         {v}
                       </span>
-                    </div>,
-                  ])}
+                    </div>}</Fragment>)}
                 </Card>
               </>
             ) : null}
@@ -1605,7 +1594,7 @@ S['MGT-05'] = {
             />
           ) : (
             <>
-              <Button variant="outline" label={t('eventForm.saveDraft')} action="MGT-05.saveDraft" onClick={saveDraft} />
+              {!editing || editing.status === 'draft' ? <Button variant="outline" label={t('eventForm.saveDraft')} disabled={busy} action="MGT-05.saveDraft" onClick={saveDraft} /> : null}
               <Button
                 label={editing && editing.status === 'published' ? t('common.save') : t('eventForm.publish')}
                 loading={busy}
@@ -1625,64 +1614,63 @@ S['MGT-06'] = {
   tab: 'clubs',
   title: 'attendance.title',
   comp: function Attendance({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const ev = sel().event(params.eventId);
     const [filter, setFilter] = useState('all');
     const [q, setQ] = useState('');
     const [menu, setMenu] = useState<any>(null);
-    if (!allowed || !ev) return <NoAccess screen="MGT-06" />;
+    const evLoad = useLoader(LD.eventLoader(params.eventId));
+    useLoader(allowed ? LD.clubEventsLoader(club.id) : null);
+    const live = useParticipantsLive(allowed && ev ? ev.id : null, ev ? ev.clubId : null);
+    const [exporting, runExport] = useBusy();
+    if (!ev && evLoad.status === 'error') return <NotFoundInline />;
+    if (!allowed || !ev) return <NoAccess loading={loading || !ev} screen="MGT-06" />;
+    void u;
     const rs = sel()
       .eventRsvps(ev.id)
+      .filter((r) => r.status !== 'cancelled')
       .map((r) => ({
         ...r,
-        user: sel().user(r.userId),
-      }))
-      .filter((r) => r.user);
+        user: (sel().user(r.userId) || { id: r.userId, name: t('common.deletedUser'), avatarSeed: r.userId }) as any,
+      }));
     const reg = rs.filter((r) => r.status === 'going' || r.status === 'attended');
     const att = rs.filter((r) => r.status === 'attended');
-    const wl = sel()
-      .waitlist(ev.id)
-      .map((r) => ({
-        ...r,
-        user: sel().user(r.userId),
-      }))
-      .filter((r) => r.user);
+    const wl = rs.filter((r) => r.status === 'waitlist').sort((a, b) => (a.waitlistAt || a.createdAt) - (b.waitlistAt || b.createdAt));
     const rate = reg.length ? Math.round((att.length / reg.length) * 100) : 0;
     const list = reg
       .filter((r) => filter === 'all' || (filter === 'attended' && r.status === 'attended') || (filter === 'absent' && r.status === 'going'))
-      .filter((r) => !q || r.user.name.toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
+      .filter((r) => !q || trLower(r.user.name).includes(trLower(q)))
       .sort((a, b) => a.user.name.localeCompare(b.user.name, 'tr'));
-    const mark = (r, v) => {
+    const mark = (r: any, v: boolean) => {
       if (!app.guard(club.id)) return;
-      const snap = app.store.get();
-      app.dispatch('rsvp.setAttended', {
-        eventId: ev.id,
-        userId: r.userId,
-        attended: v,
-      });
-      app.toast('TST-31', {
-        name: r.user.name,
-        undo: () => app.store.restore(snap),
-      });
+      A.setAttended(ev, r.userId, v)
+        .then(() =>
+          app.toast('TST-31', {
+            name: r.user.name,
+            undo: () => A.setAttended(ev, r.userId, !v).catch(handleError),
+          }),
+        )
+        .catch(handleError);
     };
-    const exportCsv = () => {
-      downloadText(
-        '\ufeff' +
-          [['ad', 'eposta', 'durum', 'okutma']]
-            .concat(rs.map((r) => [r.user.name, r.user.email, t('status.' + r.status), r.scannedAt ? new Date(r.scannedAt).toISOString() : '']))
-            .map((r) => r.map((c) => `"${c}"`).join(';'))
-            .join('\n'),
-        'katilimcilar.csv',
-        'text/csv;charset=utf-8',
-      );
-      app.toast('TST-29');
-    };
+    const exportCsv = () =>
+      runExport(async () => {
+        const emails = await Promise.all(rs.map((r) => M.readContact(club.id, r.userId).catch(() => null)));
+        downloadText(
+          '\ufeff' +
+            [['ad', 'eposta', 'durum', 'bilet', 'okutma']]
+              .concat(rs.map((r, i) => [r.user.name, emails[i] || '', t('status.' + r.status), r.ticketCode || '', r.scannedAt ? new Date(r.scannedAt).toISOString() : '']))
+              .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';'))
+              .join('\n'),
+          slug(ev.title) + '-katilimcilar.csv',
+          'text/csv;charset=utf-8',
+        );
+        app.toast('TST-29');
+      });
     const clubEvents = sel()
       .clubEvents(club.id)
       .filter((e) => e.status !== 'draft')
       .sort((a, b) => b.startsAt - a.startsAt);
-    return [
-      <AppBar
+    return <>{<AppBar
         onBack={() => app.nav.back()}
         backAction="MGT-06.back"
         titleNode={
@@ -1729,20 +1717,16 @@ S['MGT-06'] = {
           />
         )}
         <IconButton icon="more-vertical" label={t('a11y.more')} action="MGT-06.menu" onClick={() => setMenu('top')} />
-      </AppBar>,
-      <ROBanner readOnly={readOnly} />,
-      ev.startsAt > Date.now() ? <Banner kind="info" text={t('attendance.notStarted')} /> : null,
-      <div className="hscroll py8">
+      </AppBar>}{<ROBanner readOnly={readOnly} />}{ev.startsAt > Date.now() ? <Banner kind="info" text={t('attendance.notStarted')} /> : null}{<div className="hscroll py8">
         {[
           ['all', t('attendance.registered'), reg.length],
           ['attended', t('status.attended'), att.length],
           ['absent', t('attendance.absent'), reg.length - att.length],
           ['waitlist', t('status.waitlist'), wl.length],
         ].map(([id, l, n]) => (
-          <Chip key={id} label={`${l} ${n}`} selected={filter === id} action={'MGT-06.summary.' + id} onClick={() => setFilter(id)} />
+          <Chip key={id} label={`${l} ${n}`} selected={filter === id} action={'MGT-06.summary.' + id} onClick={() => setFilter(String(id))} />
         ))}
-      </div>,
-      <div className="px16 col gap8 pb16">
+      </div>}{<div className="px16 col gap8 pb16">
         <div className="row gap8">
           <Progress value={rate} max={100} kind="success" label={t('attendance.rate')} />
           <span className="t-label-m tnum">
@@ -1752,9 +1736,9 @@ S['MGT-06'] = {
           </span>
         </div>
         <Input icon="search" placeholder={t('members.search')} value={q} onInput={setQ} action="MGT-06.search" ariaLabel={t('members.search')} />
-      </div>,
-      <Scroll routeKey={route.key}>
+      </div>}{<Scroll routeKey={route.key}>
         <ListState
+          status={live}
           n={5}
           emptyProps={{
             illustration: 'empty-applications',
@@ -1783,7 +1767,7 @@ S['MGT-06'] = {
                   />
                   <Switch
                     checked={r.status === 'attended'}
-                    onChange={(v) => mark(r, v)}
+                    onChange={(v: boolean) => mark(r, v)}
                     action={'MGT-06.attended.' + r.userId}
                     label={t('status.attended')}
                     disabled={readOnly}
@@ -1796,12 +1780,10 @@ S['MGT-06'] = {
             )
           ) : null}
           {filter === 'all' || filter === 'waitlist'
-            ? [
-                <div className="group-head">
+            ? <>{<div className="group-head">
                   <span className="t-overline">{t('status.waitlist')}</span>
                   <span className="t-caption tnum">{wl.length}</span>
-                </div>,
-                wl.length ? (
+                </div>}{wl.length ? (
                   wl.map((r, i) => (
                     <div key={r.userId} className="tile is-plain">
                       <span
@@ -1832,13 +1814,13 @@ S['MGT-06'] = {
                         action={'MGT-06.promote.' + r.userId}
                         onClick={() => {
                           if (!app.guard(club.id)) return;
-                          app.dispatch('rsvp.promote', {
-                            eventId: ev.id,
-                            userId: r.userId,
-                          });
-                          app.toast('TST-X13', {
-                            name: r.user.name,
-                          });
+                          A.promote(ev, r.userId)
+                            .then(() =>
+                              app.toast('TST-X13', {
+                                name: r.user.name,
+                              }),
+                            )
+                            .catch(handleError);
                         }}
                         onDisabledClick={() => app.toast(readOnly ? 'TST-26' : 'TST-X14')}
                       />
@@ -1846,15 +1828,13 @@ S['MGT-06'] = {
                   ))
                 ) : (
                   <p className="t-body-s c-muted px16 pb16">{t('attendance.noWaitlist')}</p>
-                ),
-              ]
+                )}</>
             : null}
         </ListState>
-      </Scroll>,
-      menu === 'top' ? (
+      </Scroll>}{menu === 'top' ? (
         <PopMenu id="MGT-06" onClose={() => setMenu(null)}>
           <Tile
-            title={t('mgtMembers.export')}
+            title={exporting ? t('common.loading') : t('mgtMembers.export')}
             leading={<Icon name="download" size={20} />}
             action="MGT-06.export"
             onClick={() => {
@@ -1873,15 +1853,11 @@ S['MGT-06'] = {
               app.openDialog('DLG-17', {
                 kind: 'attendance',
                 count: reg.length,
-                onConfirm: () => {
-                  const snap = app.store.get();
-                  app.dispatch('rsvp.markAllAttended', {
-                    eventId: ev.id,
-                  });
+                onConfirm: async () => {
+                  await A.markAllAttended(ev);
                   app.closeDialog();
                   app.toast('TST-31', {
                     name: t('attendance.allRegistered'),
-                    undo: () => app.store.restore(snap),
                   });
                 },
               });
@@ -1895,17 +1871,17 @@ S['MGT-06'] = {
             onClick={() => {
               setMenu(null);
               if (!app.guard(club.id)) return;
-              app.dispatch('event.toggleRegistration', {
-                eventId: ev.id,
-              });
-              app.toast('TST-X15', {
-                open: !ev.registrationOpen,
-              });
+              A.toggleRegistration(ev)
+                .then(() =>
+                  app.toast('TST-X15', {
+                    open: !ev.registrationOpen,
+                  }),
+                )
+                .catch(handleError);
             }}
           />
         </PopMenu>
-      ) : null,
-      menu === 'events' ? (
+      ) : null}{menu === 'events' ? (
         <PopMenu id="MGT-06" onClose={() => setMenu(null)}>
           {clubEvents.map((e) => (
             <Tile
@@ -1924,91 +1900,212 @@ S['MGT-06'] = {
             />
           ))}
         </PopMenu>
-      ) : null,
-    ];
+      ) : null}</>;
   },
 };
 
 /* MGT-07 scanner */
+/** Kamera + jsQR ile QR okuma. Kamera yoksa/izin verilmezse elle kod girişi. */
+function useQrCamera(active: boolean, front: boolean, onCode: (data: string) => void) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [state, setState] = useState<'starting' | 'on' | 'denied' | 'unavailable'>('starting');
+  const [torchOk, setTorchOk] = useState(false);
+  const trackRef = useRef<MediaStreamTrack | null>(null);
+  const cb = useRef(onCode);
+  cb.current = onCode;
+  useEffect(() => {
+    if (!active) return;
+    let stop = false;
+    let raf = 0;
+    let stream: MediaStream | null = null;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    (async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return setState('unavailable');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: front ? 'user' : 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      } catch (e: any) {
+        return setState(e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'denied' : 'unavailable');
+      }
+      if (stop) return stream.getTracks().forEach((t) => t.stop());
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      v.setAttribute('playsinline', 'true');
+      await v.play().catch(() => {});
+      const track = stream.getVideoTracks()[0];
+      trackRef.current = track;
+      const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+      setTorchOk(!!caps.torch);
+      setState('on');
+      const jsQR = (await import('jsqr')).default;
+      const tick = () => {
+        if (stop) return;
+        if (v.readyState >= 2 && ctx && v.videoWidth) {
+          const w = 480;
+          const h = Math.round((v.videoHeight / v.videoWidth) * w);
+          canvas.width = w;
+          canvas.height = h;
+          ctx.drawImage(v, 0, 0, w, h);
+          const img = ctx.getImageData(0, 0, w, h);
+          const r = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
+          if (r && r.data) cb.current(r.data);
+        }
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    })();
+    return () => {
+      stop = true;
+      cancelAnimationFrame(raf);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      trackRef.current = null;
+    };
+  }, [active, front]);
+  const setTorch = (on: boolean) => {
+    const tr: any = trackRef.current;
+    if (tr && tr.applyConstraints) tr.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {});
+  };
+  return { videoRef, state, torchOk, setTorch };
+}
 S['MGT-07'] = {
   tab: 'clubs',
   title: 'scan.title',
   comp: function Scanner({ params }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { readOnly, allowed, loading } = useMgt(params);
     const ev = sel().event(params.eventId);
+    const evLoad = useLoader(LD.eventLoader(params.eventId));
     const [torch, setTorch] = useState(false);
     const [front, setFront] = useState(false);
     const [manual, setManual] = useState(false);
     const [code, setCode] = useState('');
-    const perm = app.state.session.cameraPermission;
-    useEffect(() => {
-      if (SCANNING) return;
-      if (perm === 'default') setTimeout(() => app.openDialog('DLG-04'), 300);
-    }, []);
-    if (!allowed || !ev || readOnly) return <NoAccess screen="MGT-07" />;
-    const att = sel().attended(ev.id).length;
-    const reg = sel().registered(ev.id).length;
-    const demo = (kind) => {
-      const going = sel()
-        .eventRsvps(ev.id)
-        .filter((r) => r.status === 'going');
-      const used = sel().attended(ev.id);
-      if (kind === 'valid' && going.length) {
-        const r = going[0];
-        const snap = app.store.get();
-        app.dispatch('rsvp.scan', {
-          eventId: ev.id,
-          userId: r.userId,
-        });
-        app.openSheet('SHT-24', {
-          kind: 'valid',
-          userId: r.userId,
-          eventId: ev.id,
-          undo: () => app.store.restore(snap),
-        });
-      } else if (kind === 'valid')
-        app.openSheet('SHT-24', {
-          kind: 'invalid',
-          reason: 'none',
-        });
-      else if (kind === 'used')
-        app.openSheet('SHT-24', {
-          kind: 'used',
-          userId: used.length ? used[0].userId : null,
-          scannedAt: used.length ? used[0].scannedAt : Date.now(),
-          eventId: ev.id,
-        });
-      else
-        app.openSheet('SHT-24', {
-          kind: 'invalid',
-          reason: 'other',
-        });
-    };
-    const verify = () => {
-      const r = sel()
-        .eventRsvps(ev.id)
-        .find((x) => x.ticketCode === code.trim().toUpperCase());
-      if (!r) {
-        app.openSheet('SHT-24', {
-          kind: 'invalid',
-          reason: 'other',
-        });
-        return;
+    const busy = useRef(false);
+    const last = useRef<{ data: string; at: number }>({ data: '', at: 0 });
+    const sheetOpen = ui.sheets.some((x) => x.id === 'SHT-24');
+    const handle = async (input: string) => {
+      if (!ev || busy.current) return;
+      busy.current = true;
+      try {
+        const r = await A.scanTicket(ev, input);
+        if (navigator.vibrate) navigator.vibrate(r.outcome === 'valid' ? 60 : [40, 60, 40]);
+        if (r.rsvp) void loadUsers([r.rsvp.userId]);
+        if (r.outcome === 'valid')
+          app.openSheet('SHT-24', {
+            kind: 'valid',
+            userId: r.rsvp!.userId,
+            eventId: ev.id,
+            undo: () => A.setAttended(ev, r.rsvp!.userId, false).catch(handleError),
+          });
+        else if (r.outcome === 'alreadyScanned')
+          app.openSheet('SHT-24', { kind: 'used', userId: r.rsvp!.userId, scannedAt: r.rsvp!.scannedAt, eventId: ev.id });
+        else app.openSheet('SHT-24', { kind: 'invalid', reason: r.rsvp ? 'other' : 'none' });
+      } catch (e) {
+        handleError(e);
+      } finally {
+        busy.current = false;
       }
-      const res = app.dispatch('rsvp.scan', {
-        eventId: ev.id,
-        userId: r.userId,
-      });
-      app.openSheet('SHT-24', {
-        kind: res,
-        userId: r.userId,
-        eventId: ev.id,
-        scannedAt: r.scannedAt,
-      });
-      setCode('');
-      setManual(false);
     };
-    if (perm === 'denied')
+    const cam = useQrCamera(!!ev && allowed && !readOnly && !manual, front, (data) => {
+      if (sheetOpen || busy.current) return;
+      const now = Date.now();
+      if (data === last.current.data && now - last.current.at < 4000) return;
+      last.current = { data, at: now };
+      void handle(data);
+    });
+    if (!ev && evLoad.status === 'error') return <NotFoundInline />;
+    if (!allowed || !ev || readOnly) return <NoAccess loading={loading || !ev} screen="MGT-07" />;
+    const att = ev.attendedCount || 0;
+    const reg = sel().registeredCount(ev);
+    const verify = () => {
+      const c = code.trim().toUpperCase();
+      if (!c) return;
+      void handle(c).then(() => setCode(''));
+    };
+    const header = (
+      <div
+        className="row gap4"
+        style={{
+          padding: '4px 8px',
+          position: 'relative',
+          zIndex: 2,
+        }}
+      >
+        <IconButton onCover icon="x" label={t('a11y.close')} action="MGT-07.close" onClick={() => app.nav.back()} />
+        <div
+          className="flex1 col"
+          style={{
+            padding: '0 8px',
+          }}
+        >
+          <span
+            className="t-title-s ellipsis"
+            style={{
+              color: '#fff',
+            }}
+          >
+            {ev.title}
+          </span>
+          <span
+            className="t-caption"
+            style={{
+              color: 'rgba(255,255,255,.7)',
+            }}
+          >
+            {t('scan.counter', {
+              a: att,
+              b: reg,
+            })}
+          </span>
+        </div>
+        {cam.torchOk ? (
+          <IconButton
+            onCover
+            icon="flashlight"
+            label={t('scan.torch')}
+            action="MGT-07.torch"
+            onClick={() => {
+              cam.setTorch(!torch);
+              setTorch(!torch);
+            }}
+            style={sx(
+              torch
+                ? {
+                    background: '#fff',
+                    color: '#000',
+                  }
+                : undefined,
+            )}
+          />
+        ) : null}
+        <IconButton onCover icon="switch-camera" label={t('scan.flip')} action="MGT-07.flip" onClick={() => setFront(!front)} />
+      </div>
+    );
+    const manualBox = (
+      <div
+        className="row gap8"
+        style={{
+          alignItems: 'flex-end',
+        }}
+      >
+        <div
+          className="flex1"
+          style={{
+            color: 'var(--text-primary)',
+          }}
+        >
+          <Input
+            label={t('scan.enterCode')}
+            value={code}
+            onInput={(v: string) => setCode(v.toUpperCase().slice(0, 12))}
+            placeholder="GU-XXXX-XXXX"
+            action="MGT-07.codeInput"
+            autofocus
+            onEnter={verify}
+          />
+        </div>
+        <Button label={t('scan.verify')} action="MGT-07.verify" onClick={verify} disabled={code.trim().length < 12} onDisabledClick={() => {}} />
+      </div>
+    );
+    if (cam.state === 'denied' || cam.state === 'unavailable')
       return (
         <div
           className="scan-view"
@@ -2016,14 +2113,7 @@ S['MGT-07'] = {
             paddingTop: 'var(--safe-top)',
           }}
         >
-          <div
-            className="row"
-            style={{
-              padding: '4px 8px',
-            }}
-          >
-            <IconButton onCover icon="x" label={t('a11y.close')} action="MGT-07.close" onClick={() => app.nav.back()} />
-          </div>
+          {header}
           <div
             className="empty flex1"
             style={{
@@ -2031,14 +2121,14 @@ S['MGT-07'] = {
               color: '#fff',
             }}
           >
-            <Icon name="camera" size={64} />
+            <Icon name="camera-off" size={64} />
             <h2
               className="t-title-m"
               style={{
                 color: '#fff',
               }}
             >
-              {t('scan.permissionTitle')}
+              {cam.state === 'denied' ? t('scan.permissionTitle') : t('web.scan.noCamera')}
             </h2>
             <p
               className="t-body-s"
@@ -2046,25 +2136,17 @@ S['MGT-07'] = {
                 color: 'rgba(255,255,255,.7)',
               }}
             >
-              {t('scan.permissionDesc')}
+              {cam.state === 'denied' ? t('web.scan.permissionDesc') : t('web.scan.noCameraDesc')}
             </p>
-            <Button
-              variant="outline"
-              label={t('scan.manualCode')}
-              action="MGT-07.manualCode"
-              onClick={() => {
-                app.dispatch('session.set', {
-                  cameraPermission: 'manual',
-                });
-                setManual(true);
-              }}
-              style={{
-                color: '#fff',
-                borderColor: 'rgba(255,255,255,.4)',
-                background: 'transparent',
-              }}
-            />
-            <Button label={t('scan.goSettings')} action="MGT-07.permission.retry" onClick={() => app.toast('TST-32')} />
+          </div>
+          <div
+            className="col gap12"
+            style={{
+              padding: '16px 16px calc(var(--safe-bottom) + 16px)',
+              background: 'rgba(0,0,0,.35)',
+            }}
+          >
+            {manualBox}
           </div>
         </div>
       );
@@ -2075,119 +2157,73 @@ S['MGT-07'] = {
           paddingTop: 'var(--safe-top)',
         }}
       >
-        <div
-          className="row gap4"
-          style={{
-            padding: '4px 8px',
-          }}
-        >
-          <IconButton onCover icon="x" label={t('a11y.close')} action="MGT-07.close" onClick={() => app.nav.back()} />
-          <div
-            className="flex1 col"
+        {!manual ? (
+          <video
+            ref={cam.videoRef}
+            muted
+            playsInline
+            aria-hidden="true"
             style={{
-              padding: '0 8px',
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              transform: front ? 'scaleX(-1)' : 'none',
+              opacity: cam.state === 'on' ? 0.9 : 0,
             }}
-          >
-            <span
-              className="t-title-s ellipsis"
-              style={{
-                color: '#fff',
-              }}
-            >
-              {ev.title}
-            </span>
-            <span
-              className="t-caption"
-              style={{
-                color: 'rgba(255,255,255,.7)',
-              }}
-            >
-              {t('scan.counter', {
-                a: att,
-                b: reg,
-              })}
-            </span>
-          </div>
-          <IconButton
-            onCover
-            icon="flashlight"
-            label={t('scan.torch')}
-            action="MGT-07.torch"
-            onClick={() => setTorch(!torch)}
-            style={sx(
-              torch
-                ? {
-                    background: '#fff',
-                    color: '#000',
-                  }
-                : undefined,
-            )}
           />
-          <IconButton onCover icon="switch-camera" label={t('scan.flip')} action="MGT-07.flip" onClick={() => setFront(!front)} />
-        </div>
+        ) : null}
+        {header}
         <div
           className="flex1 col"
           style={{
             justifyContent: 'center',
             alignItems: 'center',
             gap: '16px',
+            position: 'relative',
+            zIndex: 1,
           }}
         >
-          <div
-            className="scan-box"
-            style={{
-              transform: front ? 'scaleX(-1)' : 'none',
-              filter: torch ? 'brightness(1.4)' : 'none',
-            }}
-          >
+          <div className="scan-box">
             <i />
             <i />
             <i />
             <i />
-            <span className="scanline" />
+            {cam.state === 'on' && !manual ? <span className="scanline" /> : null}
           </div>
           <p
             className="t-body-s center"
             style={{
-              color: 'rgba(255,255,255,.7)',
+              color: 'rgba(255,255,255,.85)',
               maxWidth: '260px',
+              textShadow: '0 1px 4px rgba(0,0,0,.6)',
             }}
           >
-            {t('scan.hint')}
+            {manual ? t('web.scan.manualHint') : cam.state === 'starting' ? t('web.scan.starting') : t('scan.hint')}
           </p>
         </div>
         <div
           className="col gap12"
           style={{
             padding: '16px 16px calc(var(--safe-bottom) + 16px)',
-            background: 'rgba(0,0,0,.35)',
+            background: 'rgba(0,0,0,.45)',
+            position: 'relative',
+            zIndex: 1,
           }}
         >
           {manual ? (
-            <div
-              className="row gap8"
-              style={{
-                alignItems: 'flex-end',
-              }}
-            >
-              <div
-                className="flex1"
-                style={{
-                  color: 'var(--text-primary)',
-                }}
-              >
-                <Input
-                  label={t('scan.enterCode')}
-                  value={code}
-                  onInput={(v) => setCode(v.toUpperCase())}
-                  placeholder="GU-XXXX-XXXX"
-                  action="MGT-07.codeInput"
-                  autofocus
-                  onEnter={verify}
-                />
-              </div>
-              <Button label={t('scan.verify')} action="MGT-07.verify" onClick={verify} disabled={code.length < 12} onDisabledClick={() => {}} />
-            </div>
+            <>
+              {manualBox}
+              <Button
+                variant="text"
+                icon="camera"
+                label={t('web.scan.useCamera')}
+                action="MGT-07.useCamera"
+                onClick={() => setManual(false)}
+                style={{ color: '#fff' }}
+              />
+            </>
           ) : (
             <Button
               variant="outline"
@@ -2202,48 +2238,6 @@ S['MGT-07'] = {
               }}
             />
           )}
-          <span
-            className="t-overline"
-            style={{
-              color: 'rgba(255,255,255,.6)',
-            }}
-          >
-            {t('common.demo')}
-            {': '}
-            {t('scan.demoScan')}
-          </span>
-          <div className="row gap8">
-            <Button
-              size="sm"
-              variant="tonal"
-              label={t('scan.demo.valid')}
-              action="MGT-07.demoScan.valid"
-              onClick={() => demo('valid')}
-              style={{
-                flex: 1,
-              }}
-            />
-            <Button
-              size="sm"
-              variant="tonal"
-              label={t('scan.demo.used')}
-              action="MGT-07.demoScan.used"
-              onClick={() => demo('used')}
-              style={{
-                flex: 1,
-              }}
-            />
-            <Button
-              size="sm"
-              variant="tonal"
-              label={t('scan.demo.invalid')}
-              action="MGT-07.demoScan.invalid"
-              onClick={() => demo('invalid')}
-              style={{
-                flex: 1,
-              }}
-            />
-          </div>
         </div>
       </div>
     );
@@ -2255,29 +2249,31 @@ S['MGT-08'] = {
   tab: 'clubs',
   title: 'content.title',
   comp: function Content({ params, route }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
     const [tab, setTab] = useState(params.tab || 'posts');
     const [q, setQ] = useState('');
     const [menu, setMenu] = useState<any>(null);
-    if (!allowed) return <NoAccess screen="MGT-08" />;
-    const posts = sel()
-      .allPostsOf(club.id)
+    const postsLoad = useLoader(allowed ? LD.mgtPostsLoader(club.id) : null);
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-08" />;
+    void u;
+    const ids: string[] = db.extra['mgtPosts:' + club.id] || [];
+    const known = new Set(ids);
+    const posts = [...ids.map((id) => db.posts[id]), ...sel().allPostsOf(club.id).filter((p) => !known.has(p.id))]
+      .filter((p) => p && !p.isDeleted)
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt - a.createdAt)
       .filter((p) => (tab === 'posts' ? p.type === 'post' : tab === 'announcements' ? p.type === 'announcement' : p.type === 'poll'))
-      .filter((p) => !q || (p.title || '' + ' ' + p.text).toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')));
-    const pin = (p) => {
+      .filter((p) => !q || trLower((p.title || '') + ' ' + p.text).includes(trLower(q)));
+    const pin = (p: any) => {
       if (!app.guard(club.id)) return;
-      app.dispatch('post.pin', {
-        postId: p.id,
-        pinned: !p.pinned,
-      });
-      app.toast('TST-53', {
-        pinned: !p.pinned,
-      });
+      A.setPinned(p, !p.pinned)
+        .then(() =>
+          app.toast('TST-53', {
+            pinned: !p.pinned,
+          }),
+        )
+        .catch(handleError);
     };
-    return [
-      <MgtHeader club={club} title={t('content.title')} screen="MGT-08" />,
-      <ROBanner readOnly={readOnly} />,
-      <div className="px16 pb16 col gap8">
+    return <>{<MgtHeader club={club} title={t('content.title')} screen="MGT-08" />}{<ROBanner readOnly={readOnly} />}{<div className="px16 pb16 col gap8">
         <Segmented
           options={[
             {
@@ -2298,9 +2294,10 @@ S['MGT-08'] = {
           action="MGT-08.tab"
         />
         <Input icon="search" placeholder={t('common.search')} value={q} onInput={setQ} action="MGT-08.search" ariaLabel={t('common.search')} />
-      </div>,
-      <Scroll routeKey={route.key}>
+      </div>}{<Scroll routeKey={route.key} onRefresh={postsLoad.reload} refreshAction="MGT-08.refresh">
         <ListState
+          status={postsLoad.status !== 'ok' && posts.length ? 'ok' : postsLoad.status}
+          onRetry={postsLoad.reload}
           n={4}
           emptyProps={{
             illustration: 'empty-posts',
@@ -2309,8 +2306,6 @@ S['MGT-08'] = {
         >
           {posts.length ? (
             posts.map((p) => {
-              const reports = sel().reportsOnTarget('post', p.id);
-              const nRep = reports.reduce((a, r) => a + r.reasons.length, 0);
               return (
                 <Tile
                   key={p.id}
@@ -2326,20 +2321,9 @@ S['MGT-08'] = {
                     </span>
                   }
                   subtitle={`${app.fmt.rel(p.createdAt)} · ${t('content.stats', {
-                    likes: p.likes.length,
-                    comments: p.commentIds.length,
-                  })}${p.hidden ? ' · ' + t('content.hidden') : ''}`}
-                  sub2={
-                    nRep ? (
-                      <Badge
-                        kind="pending"
-                        icon="flag"
-                        label={t('content.reports', {
-                          count: nRep,
-                        })}
-                      />
-                    ) : null
-                  }
+                    likes: p.likeCount || 0,
+                    comments: p.commentCount || 0,
+                  })}${p.isHidden ? ' · ' + t('content.hidden') : ''}`}
                   action={'MGT-08.row.' + p.id}
                   onClick={() =>
                     app.nav.push('FED-02', {
@@ -2352,7 +2336,7 @@ S['MGT-08'] = {
                       icon="more-vertical"
                       label={t('a11y.more')}
                       action={'MGT-08.menu.' + p.id}
-                      onClick={(e) => {
+                      onClick={(e: any) => {
                         e.stopPropagation();
                         setMenu(p);
                       }}
@@ -2365,8 +2349,7 @@ S['MGT-08'] = {
             <EmptyState illustration="empty-posts" title={t('content.empty')} />
           )}
         </ListState>
-      </Scroll>,
-      readOnly ? null : (
+      </Scroll>}{readOnly ? null : (
         <button
           type="button"
           className="fab"
@@ -2381,8 +2364,7 @@ S['MGT-08'] = {
           <Icon name="plus" size={22} />
           {t('feed.type.post')}
         </button>
-      ),
-      menu ? (
+      )}{menu ? (
         <PopMenu id="MGT-08" onClose={() => setMenu(null)}>
           <Tile
             title={menu.pinned ? t('post.unpin') : t('post.pin')}
@@ -2423,8 +2405,7 @@ S['MGT-08'] = {
             }}
           />
         </PopMenu>
-      ) : null,
-    ];
+      ) : null}</>;
   },
 };
 
@@ -2433,15 +2414,19 @@ S['MGT-09'] = {
   tab: 'clubs',
   title: 'clubSettings.title',
   comp: function ClubSettings({ params }: any) {
-    const { u, club, readOnly, allowed } = useMgt(params);
-    if (!allowed) return <NoAccess screen="MGT-09" />;
+    const { u, club, readOnly, allowed, loading } = useMgt(params);
+    const [busy, run] = useBusy();
+    const [logoBusy, runLogo] = useBusy();
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-09" />;
+    void u;
+    const social: any = club.social || {};
     const [f, set, reset] = useForm('clubSettings-' + club.id, {
       categoryId: club.categoryId,
-      summary: club.summary,
-      about: club.about,
-      email: club.social.email || '',
-      instagram: club.social.instagram || '',
-      web: club.social.web || '',
+      summary: club.summary || '',
+      about: club.about || '',
+      email: social.email || '',
+      instagram: social.instagram || '',
+      web: social.web || '',
       applicationsOpen: club.applicationsOpen,
       approvalRequired: club.approvalRequired,
       requireNote: !!club.requireNote,
@@ -2449,12 +2434,12 @@ S['MGT-09'] = {
         palette: club.palette,
         pattern: club.pattern,
         seed: club.coverSeed,
+        path: club.coverPath || null,
       },
       errors: {},
       dirty: false,
     });
-    const [busy, run] = useBusy();
-    const upd = (p) => {
+    const upd = (p: any) => {
       if (readOnly) {
         app.toast('TST-26');
         return;
@@ -2495,31 +2480,29 @@ S['MGT-09'] = {
         });
         if (Object.keys(e).length) return;
         if (!app.guard(club.id)) return;
-        await app.api();
         const wasOpen = club.applicationsOpen;
-        app.dispatch('club.update', {
-          clubId: club.id,
-          patch: {
-            categoryId: f.categoryId,
-            summary: f.summary,
-            about: f.about,
-            social: {
-              email: f.email,
-              instagram: f.instagram.startsWith('@') || !f.instagram ? f.instagram : '@' + f.instagram,
-              web: f.web,
-            },
-            applicationsOpen: f.applicationsOpen,
-            approvalRequired: f.approvalRequired,
-            requireNote: f.requireNote,
-            palette: f.cover.palette,
-            pattern: f.cover.pattern,
-            coverSeed: f.cover.seed,
+        let coverPath: string | null = f.cover.path || null;
+        if (f.cover.file) {
+          const { prepareImage, upload, StoragePaths } = await import('../data/repo/storage');
+          coverPath = await upload(StoragePaths.club(club.id), await prepareImage(f.cover.file, 1600));
+        }
+        await A.updateClubSettings(club.id, {
+          summary: f.summary.trim(),
+          about: f.about.trim(),
+          social: {
+            email: f.email.trim() || null,
+            instagram: !f.instagram.trim() ? null : f.instagram.trim().startsWith('@') ? f.instagram.trim() : '@' + f.instagram.trim(),
+            web: f.web.trim() || null,
           },
-          actorId: u,
+          applicationsOpen: f.applicationsOpen,
+          approvalRequired: f.approvalRequired,
+          requireNote: f.requireNote,
+          palette: f.cover.palette,
+          pattern: f.cover.pattern,
+          coverSeed: f.cover.seed,
+          coverPath,
         });
-        set({
-          dirty: false,
-        });
+        reset();
         app.toast('TST-21');
         if (wasOpen !== f.applicationsOpen)
           setTimeout(
@@ -2530,7 +2513,8 @@ S['MGT-09'] = {
             1200,
           );
       });
-    const advisor = sel().user(club.advisorId);
+    const adv: any = club.advisor;
+    const advisor = adv ? sel().user(adv.userId) || { id: adv.userId || 'advisor', name: adv.name, avatarSeed: adv.name } : null;
     return (
       <>
         <MgtHeader club={club} title={t('clubSettings.title')} screen="MGT-09" back={back} />
@@ -2544,16 +2528,28 @@ S['MGT-09'] = {
                   type="button"
                   className="emblem"
                   data-action="MGT-09.logo"
+                  style={{ position: 'relative', overflow: 'hidden', padding: 0 }}
                   onClick={() =>
                     readOnly
                       ? ro()
                       : app.openSheet('SHT-16', {
-                          onPick: () => app.toast('TST-57'),
+                          hasPhoto: !!club.logoPath,
+                          onRemove: () =>
+                            runLogo(async () => {
+                              await A.updateClubSettings(club.id, { logoPath: null });
+                              app.toast('TST-57');
+                            }),
+                          onPick: (file: File) =>
+                            runLogo(async () => {
+                              await A.uploadClubImage(club.id, file, 'logo');
+                              app.toast('TST-57');
+                            }),
                         })
                   }
                   aria-label={t('clubSettings.logo')}
+                  aria-busy={logoBusy ? 'true' : undefined}
                 >
-                  <Icon name={club.iconName} size={30} />
+                  <ClubEmblem club={club} size={30} style={{ width: '100%', height: '100%', border: 0 }} />
                 </button>
                 <button
                   type="button"
@@ -2571,23 +2567,19 @@ S['MGT-09'] = {
                       : app.openSheet('SHT-31', {
                           value: f.cover,
                           icon: club.iconName,
-                          onSelect: (c) =>
+                          onSelect: (c: any) =>
                             upd({
-                              cover: c,
+                              cover: c.file ? { ...c, path: null, url: URL.createObjectURL(c.file) } : { ...c, path: null, file: null, url: null },
                             }),
                         })
                   }
                   aria-label={t('clubSettings.cover')}
                 >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: '0',
-                    }}
-                    dangerouslySetInnerHTML={{
-                      __html: coverArtSVG(f.cover.seed, club.iconName, f.cover.palette, f.cover.pattern),
-                    }}
-                  />
+                  {f.cover.url ? (
+                    <img src={f.cover.url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0, height: '100%' }} />
+                  )}
                   <span
                     className="badge badge-neutral"
                     style={{
@@ -2618,17 +2610,7 @@ S['MGT-09'] = {
                 icon="layout-grid"
                 value={t('cat.' + f.categoryId)}
                 action="MGT-09.category"
-                onClick={() =>
-                  readOnly
-                    ? ro()
-                    : app.openSheet('SHT-33', {
-                        value: f.categoryId,
-                        onSelect: (id) =>
-                          upd({
-                            categoryId: id,
-                          }),
-                      })
-                }
+                onClick={() => app.toast('TST-20')}
               />
               <Input
                 label={t('clubSettings.summary')}
@@ -2708,9 +2690,7 @@ S['MGT-09'] = {
                   ['applicationsOpen', 'lock-open'],
                   ['approvalRequired', 'shield-check'],
                   ['requireNote', 'file-text'],
-                ].map(([k, icon], i) => [
-                  i ? <div className="divider" /> : null,
-                  <div key={k} className="tile is-plain in-card">
+                ].map(([k, icon], i) => <Fragment key={k}>{i ? <div className="divider" /> : null}{<div  className="tile is-plain in-card">
                     <Icon name={icon} size={20} class="c-muted" />
                     <span className="tile-text">
                       <span
@@ -2735,15 +2715,14 @@ S['MGT-09'] = {
                       disabled={readOnly}
                       onDisabledClick={ro}
                     />
-                  </div>,
-                ])}
+                  </div>}</Fragment>)}
               </Card>
               {!f.approvalRequired ? <Banner kind="warning" text={t('clubSettings.instantWarning')} card /> : null}
             </div>
             <div className="col gap8">
               <span className="t-overline">{t('club.advisor')}</span>
               <Card>
-                <UserRow user={advisor} sub={t('clubSettings.advisorLocked')} inCard />
+                {advisor ? <UserRow user={advisor} sub={t('clubSettings.advisorLocked')} inCard /> : <p className="t-body-s c-muted p16">{t('web.club.noAdvisor')}</p>}
               </Card>
             </div>
           </div>
@@ -2769,21 +2748,25 @@ S['MGT-10'] = {
   tab: 'clubs',
   title: 'activity.title',
   comp: function Activity({ params, route }: any) {
-    const { club, readOnly, allowed } = useMgt(params);
+    const { club, readOnly, allowed, loading } = useMgt(params);
     const [filter, setFilter] = useState('all');
-    if (!allowed) return <NoAccess screen="MGT-10" />;
-    const acts = sel()
-      .activityOf(club.id)
-      .filter((a) => filter === 'all' || ACT_CAT[a.kind] === filter);
+    const cat = filter === 'all' ? null : filter;
+    const actLoad = useLoader(allowed ? LD.activityLoader(club.id, cat) : null);
+    const [more, runMore] = useBusy();
+    if (!allowed) return <NoAccess loading={loading} screen="MGT-10" />;
+    const page = db.extra['activity:' + club.id + ':' + (cat || 'all')];
+    const acts: any[] = (page?.items || []).filter((a: any) => filter === 'all' || ACT_CAT[a.kind] === filter);
     const groups: any[] = [];
     acts.forEach((a) => {
-      const k = dayKey(a.createdAt);
+      // Gelecek tarihli kayıt gerçekte oluşmaz (sunucu zamanı); örnek veride olursa bugüne sabitlenir.
+      const ts = Math.min(a.createdAt, Date.now());
+      const k = dayKey(ts);
       const g = groups.find((x) => x.k === k);
       if (g) g.items.push(a);
       else
         groups.push({
           k,
-          ts: a.createdAt,
+          ts,
           items: [a],
         });
     });
@@ -2804,6 +2787,8 @@ S['MGT-10'] = {
         </div>
         <Scroll routeKey={route.key}>
           <ListState
+            status={actLoad.status !== 'ok' && acts.length ? 'ok' : actLoad.status}
+            onRetry={actLoad.reload}
             n={6}
             emptyProps={{
               illustration: 'empty-notifications',
@@ -2811,8 +2796,7 @@ S['MGT-10'] = {
             }}
           >
             {groups.length ? (
-              [
-                groups.map((g) => (
+              <>{groups.map((g) => (
                   <div key={g.k}>
                     <div className="group-head">
                       <span
@@ -2828,9 +2812,20 @@ S['MGT-10'] = {
                       <ActivityRow key={a.id} a={a} screen="MGT-10" club={club} />
                     ))}
                   </div>
-                )),
-                <ListEnd />,
-              ]
+                ))}
+                {page?.hasMore ? (
+                  <div className="p16 center">
+                    <Button
+                      variant="text"
+                      label={t('web.loadMore')}
+                      loading={more}
+                      action="MGT-10.loadMore"
+                      onClick={() => runMore(() => LD.loadMoreActivity(club.id, cat))}
+                    />
+                  </div>
+                ) : (
+                  <ListEnd />
+                )}</>
             ) : (
               <EmptyState illustration="empty-notifications" title={t('activity.empty')} />
             )}

@@ -37,6 +37,13 @@ export const WEB_TR: Record<string, string> = {
   'a11y.next': 'Sonraki',
   'web.notif.unsupported': 'Bu tarayıcı desteklemiyor',
   'web.ticket.brightness': 'Okutmadan önce ekran parlaklığını artır',
+  'web.bulk.partial': '{total} başvurudan {ok} tanesi işlendi; diğerleri başka bir yönetici tarafından değiştirilmiş olabilir.',
+  'web.scan.noCameraDesc': 'Bu cihazda kamera bulunamadı ya da sayfa güvenli bağlantıyla açılmadı. Bilet kodunu aşağıya elle girebilirsin.',
+  'web.scan.permissionDesc': 'Tarayıcının adres çubuğundaki kamera simgesinden izin verebilir ya da bilet kodunu elle girebilirsin.',
+  'web.scan.manualHint': 'Katılımcının biletindeki kodu gir (GU-XXXX-XXXX).',
+  'web.scan.starting': 'Kamera açılıyor…',
+  'web.scan.useCamera': 'Kamerayla okut',
+  'web.club.noAdvisor': 'Danışman atanmamış.',
 };
 export const WEB_EN: Record<string, string> = {
   'web.err.generic': 'Something went wrong. Please try again.',
@@ -76,4 +83,11 @@ export const WEB_EN: Record<string, string> = {
   'a11y.next': 'Next',
   'web.notif.unsupported': 'Not supported by this browser',
   'web.ticket.brightness': 'Turn up screen brightness before scanning',
+  'web.bulk.partial': '{ok} of {total} applications were processed; others may have been changed by another manager.',
+  'web.scan.noCameraDesc': 'No camera was found on this device, or the page is not on a secure connection. You can enter the ticket code below.',
+  'web.scan.permissionDesc': "Allow camera access from the camera icon in your browser's address bar, or enter the ticket code manually.",
+  'web.scan.manualHint': "Enter the code on the attendee's ticket (GU-XXXX-XXXX).",
+  'web.scan.starting': 'Starting camera…',
+  'web.scan.useCamera': 'Scan with camera',
+  'web.club.noAdvisor': 'No advisor assigned.',
 };

@@ -1900,7 +1900,7 @@ S['FED-03'] = {
           }
         : {
             postId: P.newPostId(),
-            type: 'post',
+            type: params.type === 'announcement' ? 'announcement' : 'post',
             text: '',
             title: '',
             images: [],

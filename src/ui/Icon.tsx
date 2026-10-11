@@ -11,7 +11,7 @@ export function Icon({ name, size = 24, stroke = 1.75, class: cls, className, st
   if (import.meta.env.DEV && !ICONS[resolveIcon(name)]) console.warn('[icon] eksik simge', name);
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || 'currentColor'} strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round"
-      className={cls || className} style={sx(style)} aria-hidden={label ? undefined : true} role={label ? 'img' : undefined} aria-label={label}>
+      className={cls || className} style={{ width: size, height: size, ...(sx(style) as any) }} aria-hidden={label ? undefined : true} role={label ? 'img' : undefined} aria-label={label}>
       {node.map(([tag, attrs], i) => createElement(tag, { key: i, ...Object.fromEntries(Object.entries(attrs).map(([k, v]) => [camel(k), v])) }))}
     </svg>
   );

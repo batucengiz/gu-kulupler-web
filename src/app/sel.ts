@@ -109,6 +109,12 @@ export const sel = {
     const mine = Object.values(session.s.rsvps).filter((r) => r.clubId === clubId && r.status !== 'cancelled').map((r) => ({ r, e: db.events[r.eventId] })).filter((x) => x.e && x.e.endsAt < Date.now() && x.e.status === 'published');
     if (!mine.length) return null; return Math.round((mine.filter((x) => x.r.status === 'attended').length / mine.length) * 100);
   },
+  /** Yönetici görünümü: üyenin son geçmiş etkinliklerdeki katılım oranı (mgtRatesLoader doldurur). */
+  memberRate(clubId: string, u: string | null | undefined): number | null {
+    const r = db.extra['rates:' + clubId];
+    if (r && u && u in r) return r[u];
+    return u && u === me() ? sel.attendanceRate(clubId, u) : null;
+  },
   announcementLimit: () => LIMITS.announcementDailyLimit,
 };
 export type Sel = typeof sel;

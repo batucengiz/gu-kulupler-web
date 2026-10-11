@@ -2,6 +2,7 @@
 import { TR, EN } from './dict';
 import { WEB_TR, WEB_EN } from './web';
 import { prefs } from '../app/prefs';
+import { trSuffix } from './tr-suffix';
 
 const DICT: Record<'tr' | 'en', Record<string, string>> = { tr: { ...TR, ...WEB_TR }, en: { ...EN, ...WEB_EN } };
 const missing = new Set<string>();
@@ -18,7 +19,13 @@ export function icu(str: string, params: Params, loc: string): string {
     if (c === '{') {
       const end = matchBrace(str, i); const inner = str.slice(i + 1, end); i = end + 1;
       const parts = splitTop(inner, 3); const name = parts[0].trim();
-      if (parts.length === 1) { const v = params[name]; out += v == null ? '' : v; continue; }
+      if (parts.length === 1) {
+        const v = params[name]; out += v == null ? '' : v;
+        // Türkçe: "{x}'ın" gibi kesme işaretli ek, değerin okunuşuna uydurulur.
+        const m = loc === 'tr' && v != null && v !== '' ? /^['’]([a-zçğıöşü]+)/.exec(str.slice(i)) : null;
+        if (m) { out += str[i] + trSuffix(String(v), m[1]); i += m[0].length; }
+        continue;
+      }
       const type = parts[1].trim();
       if (type === 'plural') {
         const n = Number(params[name] ?? 0); let cat = 'other';

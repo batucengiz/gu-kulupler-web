@@ -52,9 +52,9 @@ export const allMembersLoader = (clubId: string) =>
 /** Başvurular (yönetici) — bekleyen + son kararlar. */
 export const appsLoader = (clubId: string) =>
   L(`apps:${clubId}`, async () => {
-    const [pending, rejected] = await Promise.all([M.listByStatus(clubId, 'pending'), M.listByStatus(clubId, 'rejected')]);
-    db.putMemberships([...pending.items, ...rejected.items]);
-    await users([...pending.items, ...rejected.items]);
+    const [pending, rejected, active] = await Promise.all([M.listByStatus(clubId, 'pending'), M.listByStatus(clubId, 'rejected'), M.listAllActive(clubId)]);
+    db.putMemberships([...pending.items, ...rejected.items, ...active]);
+    await users([...pending.items, ...rejected.items, ...active.filter((m) => m.decidedAt)]);
   });
 
 /** CLB-03 Etkinlikler sekmesi. */
@@ -103,6 +103,87 @@ export const participantsLoader = (eventId: string, clubId: string) =>
     db.putRsvps(list); await loadUsers(list.map((r) => r.userId));
   });
 
+/** MGT-01 paneli: KPI'lar, 8 haftalık üye grafiği, son etkinlik akışı, günlük duyuru kotası. */
+export const mgtDashLoader = (clubId: string) =>
+  L(`mgt:${clubId}:dash`, async () => {
+    const A = await import('../data/repo/activity');
+    const P = await import('../data/repo/posts');
+    const { istanbulDay } = await import('../lib/util');
+    const DAY = 864e5;
+    const nowMs = Date.now();
+    const weekEnd = (k: number) => nowMs - (7 - k) * 7 * DAY; // k=0..7 → 7 hafta önce .. şimdi
+    const d = new Date(nowMs); d.setDate(1); d.setHours(0, 0, 0, 0);
+    const monthStart = d.getTime();
+    const from = Math.min(monthStart, weekEnd(0));
+    const [pending, evs, moves, recent, today, posts] = await Promise.all([
+      M.listByStatus(clubId, 'pending'),
+      E.listClubEvents(clubId),
+      A.listKinds(clubId, ['application_approved', 'member_joined', 'member_left', 'member_removed'], from).catch(() => []),
+      A.listActivity(clubId, null),
+      P.getTodayCount(clubId).catch(() => 0),
+      P.listForManagement(clubId, null, 100).catch(() => ({ items: [] as any[] })),
+    ]);
+    db.putMemberships(pending.items); db.putEvents(evs.items);
+    const club = db.clubs[clubId];
+    const cur = club ? club.memberCount : 0;
+    const delta = (a: { kind: string }) => (a.kind === 'member_left' || a.kind === 'member_removed' ? -1 : 1);
+    // her hafta sonundaki üye sayısı = bugünkü sayı − o andan sonraki net katılımlar
+    const growth = Array.from({ length: 8 }, (_, k) => Math.max(0, cur - moves.filter((a) => a.createdAt > weekEnd(k)).reduce((n, a) => n + delta(a), 0)));
+    db.setExtra('mgt:' + clubId, {
+      pending: pending.items.length,
+      pendingMore: pending.hasMore,
+      newMembers: moves.filter((a) => a.createdAt >= monthStart && delta(a) > 0).length,
+      announcements: posts.items.filter((p: any) => p.type === 'announcement' && p.createdAt >= monthStart).length,
+      growth,
+      recent: recent.items,
+    });
+    db.setExtra('ann:' + clubId + ':' + istanbulDay(nowMs).key, today);
+    await loadUsers([...recent.items.map((a) => a.actorId), ...recent.items.map((a) => (a.refs || {}).userId), ...pending.items.map((m) => m.userId)]);
+  });
+
+/** MGT-03: üyelerin katılım oranları — son 10 geçmiş yayınlanmış etkinliğin katılımcı listesinden. */
+export const mgtRatesLoader = (clubId: string) =>
+  L(`mgt:${clubId}:rates`, async () => {
+    const evs = (await E.listClubEvents(clubId)).items;
+    db.putEvents(evs);
+    const past = evs.filter((e) => e.status === 'published' && e.endsAt < Date.now()).sort((a, b) => b.startsAt - a.startsAt).slice(0, 10);
+    const lists = await Promise.all(past.map((e) => R.listParticipants(e.id, clubId).catch(() => [])));
+    const tot: Record<string, [number, number]> = {};
+    lists.flat().forEach((r) => {
+      if (r.status !== 'going' && r.status !== 'attended') return;
+      const x = (tot[r.userId] = tot[r.userId] || [0, 0]);
+      x[1]++; if (r.status === 'attended') x[0]++;
+    });
+    db.setExtra('rates:' + clubId, Object.fromEntries(Object.entries(tot).map(([u, [a, n]]) => [u, Math.round((a / n) * 100)])));
+  });
+
+/** MGT-10: etkinlik akışı (kategori süzgeci + sayfalama). */
+export const activityLoader = (clubId: string, category: string | null) =>
+  L(`mgt:${clubId}:activity:${category || 'all'}`, async () => {
+    const A = await import('../data/repo/activity');
+    const p = await A.listActivity(clubId, category);
+    db.setExtra(`activity:${clubId}:${category || 'all'}`, { items: p.items, cursor: p.cursor, hasMore: p.hasMore });
+    await loadUsers([...p.items.map((a) => a.actorId), ...p.items.map((a) => (a.refs || {}).userId)]);
+  });
+export async function loadMoreActivity(clubId: string, category: string | null) {
+  const A = await import('../data/repo/activity');
+  const k = `activity:${clubId}:${category || 'all'}`;
+  const cur = db.extra[k]; if (!cur || !cur.hasMore) return;
+  const p = await A.listActivity(clubId, category, cur.cursor);
+  db.setExtra(k, { items: [...cur.items, ...p.items], cursor: p.cursor, hasMore: p.hasMore });
+  await loadUsers([...p.items.map((a) => a.actorId), ...p.items.map((a) => (a.refs || {}).userId)]);
+}
+
+/** MGT-08: içerik yönetimi (gizli gönderiler dahil). */
+export const mgtPostsLoader = (clubId: string) =>
+  L(`mgt:${clubId}:posts`, async () => {
+    const P = await import('../data/repo/posts');
+    const p = await P.listForManagement(clubId, null, 100);
+    db.putPosts(p.items);
+    db.setExtra('mgtPosts:' + clubId, p.items.map((x) => x.id));
+    await loadUsers(p.items.map((x) => x.authorId));
+  });
+
 /** useLoad'un Loader sürümü: `const { status, reload } = useLoader(membersLoader(id))`. */
 export const useLoader = (l: Loader | null) => useLoad(l ? l.key : null, l ? l.fn : () => Promise.resolve());
 /** Tek kulüp (askıdaki kulüp de okunur). */
@@ -126,7 +207,7 @@ export const profileLoader = (otherId: string, ctxClubId?: string | null) =>
   });
 
 /** NTF-01: bildirimlerin başlık/metinleri için başvurulan kulüp, etkinlik, gönderi ve kullanıcıları getir (eksik olanları). */
-export async function loadNotifRefs(list: Array<{ refs?: Record<string, string> }>) {
+export async function loadNotifRefs(list: Array<{ refs?: any }>) {
   const pick = (k: string) => [...new Set(list.map((n) => (n.refs || {})[k]).filter(Boolean) as string[])];
   const { getClubs } = await import('../data/repo/clubs');
   const { getPost } = await import('../data/repo/posts');
