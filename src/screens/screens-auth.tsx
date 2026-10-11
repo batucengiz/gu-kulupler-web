@@ -33,6 +33,7 @@ import {
   session,
   setPrefs,
   handleError,
+  LIMITS,
 } from '../ui/kit';
 import { DEMO_ACCOUNTS, DEMO_PASSWORD, DEMO_ENABLED } from '../lib/demo';
 import * as AU from '../data/repo/auth';
@@ -531,7 +532,9 @@ S['AUT-02'] = {
     const submit = () =>
       run(async () => {
         const e: any = {};
-        if (!f.name.trim()) e.name = t('auth.err.required');
+        const nm = f.name.trim().replace(/\s+/g, ' ');
+        if (!nm) e.name = t('auth.err.required');
+        else if (nm.length < LIMITS.nameMin || nm.length > LIMITS.nameMax) e.name = t('web.err.nameLength', { min: LIMITS.nameMin, max: LIMITS.nameMax });
         if (!f.email) e.email = t('auth.err.required');
         else if (!emailOk(f.email)) e.email = t('auth.err.email');
         else if (!domainOk(f.email)) e.email = t('auth.err.domain');
@@ -550,7 +553,7 @@ S['AUT-02'] = {
         if (!app.requireOnline()) return;
         try {
           delete app.forms.data.verify;
-          await AU.register(f.name.trim(), f.email.trim(), f.password);
+          await AU.register(nm, f.email.trim(), f.password);
           // oturum dinleyicisi doğrulanmamış kullanıcıyı AUT-03'e yönlendirir
         } catch (err) {
           const c = errCode(err);

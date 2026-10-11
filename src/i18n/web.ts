@@ -44,6 +44,13 @@ export const WEB_TR: Record<string, string> = {
   'web.scan.starting': 'Kamera açılıyor…',
   'web.scan.useCamera': 'Kamerayla okut',
   'web.club.noAdvisor': 'Danışman atanmamış.',
+  'web.err.nameLength': 'Ad en az {min}, en fazla {max} karakter olmalı',
+  'web.delete.progress.memberships': 'Üyeliklerin kapatılıyor…',
+  'web.delete.progress.rsvps': 'Etkinlik kayıtların iptal ediliyor…',
+  'web.delete.progress.personal': 'Kişisel verilerin temizleniyor…',
+  'web.about.team.web': 'Web uygulaması',
+  'about.desc': 'Gümüşhane Üniversitesi öğrenci kulüpleri için TÜBİTAK 2209-A Üniversite Öğrencileri Araştırma Projeleri kapsamında geliştirilmiştir.',
+  'about.build': 'Web sürümü',
 };
 export const WEB_EN: Record<string, string> = {
   'web.err.generic': 'Something went wrong. Please try again.',
@@ -90,4 +97,11 @@ export const WEB_EN: Record<string, string> = {
   'web.scan.starting': 'Starting camera…',
   'web.scan.useCamera': 'Scan with camera',
   'web.club.noAdvisor': 'No advisor assigned.',
+  'web.err.nameLength': 'Name must be {min} to {max} characters',
+  'web.delete.progress.memberships': 'Closing your memberships…',
+  'web.delete.progress.rsvps': 'Cancelling your event registrations…',
+  'web.delete.progress.personal': 'Clearing your personal data…',
+  'web.about.team.web': 'Web app',
+  'about.desc': 'Built for Gümüşhane University student clubs as a TÜBİTAK 2209-A undergraduate research project.',
+  'about.build': 'Web edition',
 };

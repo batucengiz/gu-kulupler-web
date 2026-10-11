@@ -102,7 +102,8 @@ export async function resetPassword(email: string) {
   }
 }
 /** Şifre değiştir: mevcut şifreyle yeniden kimlik doğrulama + güncelleme. */
-export async function changePassword(current: string, next: string) {
+/** Hassas işlemlerden (şifre değişimi, hesap silme) önce mevcut şifreyle yeniden doğrulama. */
+export async function reauth(current: string) {
   const u = auth.currentUser;
   if (!u || !u.email) throw new AppError('unauthenticated');
   try {
@@ -114,6 +115,10 @@ export async function changePassword(current: string, next: string) {
     if (c === 'network-request-failed') throw new AppError('network');
     throw err;
   }
+  return u;
+}
+export async function changePassword(current: string, next: string) {
+  const u = await reauth(current);
   try {
     await updatePassword(u, next);
   } catch (err) {

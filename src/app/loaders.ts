@@ -240,3 +240,15 @@ export function usePostLive(postId: string, clubId: string) {
   }, [postId, clubId]);
   return (db.extra['postLive:' + postId] as string) || 'loading';
 }
+
+/** PRF-04: kaydedilen gönderiler. Okunamayan/silinen gönderi "kaldırıldı" olarak işaretlenir (db.extra.savedGone). */
+export const savedLoader = () =>
+  L('saved', async () => {
+    const P = await import('../data/repo/posts');
+    const ids = session.s.savedIds;
+    const gone: string[] = [];
+    const posts = await Promise.all(ids.map((id) => P.getPost(id).catch(() => { gone.push(id); return null; })));
+    db.putPosts(posts.filter((p): p is NonNullable<typeof p> => !!p));
+    db.setExtra('savedGone', gone);
+    await loadUsers(posts.map((p) => p?.authorId || ''));
+  });

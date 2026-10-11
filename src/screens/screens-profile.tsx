@@ -1,3 +1,4 @@
+import * as SV from '../data/repo/saved';
 import {
   AppBar,
   Avatar,
@@ -5,7 +6,6 @@ import {
   Button,
   Card,
   Chip,
-  DEMO_PASSWORD,
   EmptyState,
   INTERESTS,
   Icon,
@@ -28,17 +28,53 @@ import {
   Tile,
   UserRow,
   app,
-  clubFilters,
   deptYear,
   startJoin,
   useBusy,
   useForm,
   useState,
+  LIMITS,
+  A,
+  handleError,
+  session,
+  ClubEmblem,
+  openManage,
+  Fragment,
+  trLower,
+  useLoader,
+  LD,
+  db,
+  sx,
+  prefs,
+  setPrefs,
+  useLoad,
+  SkeletonList,
 } from '../ui/kit';
+import * as AU from '../data/repo/auth';
+import { loadUsers } from '../data/repo/users';
+import { errCode } from '../data/fs';
+import { DEMO_ENABLED } from '../lib/demo';
+import { TEAM } from '../lib/team';
+import { clubFilters } from './screens-clubs';
 /* ===== SCREENS: PRF · SET ===== */
 const t = (k: string, p?: any) => app.t(k, p);
 const S = SCREENS;
 const sel = () => app.sel;
+
+/** Profil fotoğrafı: SHT-16 ile seç → küçült → Storage'a yükle; ya da kaldır. */
+function changePhoto(hasPhoto: boolean) {
+  app.openSheet('SHT-16', {
+    hasPhoto,
+    onPick: (file: File | undefined) => {
+      if (!file || !app.requireOnline()) return;
+      A.uploadAvatar(file).then(() => app.toast('TST-21'), handleError);
+    },
+    onRemove: () => {
+      if (!app.requireOnline()) return;
+      A.updateProfile({ avatarPath: null }).then(() => app.toast('TST-21'), handleError);
+    },
+  });
+}
 
 /* PRF-01 */
 S['PRF-01'] = {
@@ -47,13 +83,12 @@ S['PRF-01'] = {
   comp: function Profile({ route }: any) {
     const u = app.uid();
     const me = app.me();
+    useLoader(LD.clubsLoader());
     if (!me) return null;
     const clubs = sel().myClubs(u);
     const managed = sel().managedClubs(u);
     const pending = sel().pendingOf(u);
-    const attended = sel()
-      .userRsvps(u)
-      .filter((r) => r.status === 'attended').length;
+    const attended = Object.values(session.s.rsvps).filter((r: any) => r.status === 'attended').length;
     return (
       <>
         <AppBar large title={t('nav.profile')}>
@@ -66,11 +101,7 @@ S['PRF-01'] = {
                 type="button"
                 className="rel"
                 data-action="PRF-01.avatar"
-                onClick={() =>
-                  app.openSheet('SHT-16', {
-                    onPick: () => {},
-                  })
-                }
+                onClick={() => changePhoto(!!me.avatarPath)}
                 aria-label={t('profile.changePhoto')}
               >
                 <Avatar user={me} size={96} />
@@ -91,7 +122,7 @@ S['PRF-01'] = {
               <div className="flex1 col gap6">
                 <h2 className="t-title-m">{me.name}</h2>
                 <span className="t-body-s c-sec">{deptYear(me)}</span>
-                {me.global === 'superadmin' ? (
+                {sel().isSuper(u) ? (
                   <span>
                     <RoleBadge role="superadmin" />
                   </span>
@@ -120,7 +151,7 @@ S['PRF-01'] = {
                       tab: 'pending',
                     }),
                 ],
-              ].map(([k, v, go]) => (
+              ].map(([k, v, go]: any) => (
                 <button
                   type="button"
                   key={k}
@@ -152,9 +183,7 @@ S['PRF-01'] = {
                     key={m.clubId}
                     inCard
                     leading={
-                      <span className="emblem is-sm">
-                        <Icon name={m.club.iconName} size={20} />
-                      </span>
+                      <ClubEmblem club={m.club} cls="is-sm" size={20} />
                     }
                     title={m.club.name}
                     subtitle={<RoleBadge role={m.role} />}
@@ -179,7 +208,7 @@ S['PRF-01'] = {
                     icon="layout-grid"
                     label={t('profile.managePanel')}
                     action="PRF-01.managedAll"
-                    onClick={() => app.flows.openManage()}
+                    onClick={() => openManage()}
                   />
                 </div>
               </Card>
@@ -193,16 +222,12 @@ S['PRF-01'] = {
               </div>
               {clubs.length ? (
                 <Card>
-                  {clubs.slice(0, 3).map((m, i) => [
-                    i ? <div className="divider" /> : null,
+                  {clubs.slice(0, 3).map((m, i) => (
+                    <Fragment key={m.clubId}>
+                    {i ? <div className="divider" /> : null}
                     <Tile
-                      key={m.clubId}
                       inCard
-                      leading={
-                        <span className="emblem is-sm">
-                          <Icon name={m.club.iconName} size={20} />
-                        </span>
-                      }
+                      leading={<ClubEmblem club={m.club} cls="is-sm" size={20} />}
                       title={m.club.name}
                       subtitle={<RoleBadge role={m.role} />}
                       chevron
@@ -212,8 +237,9 @@ S['PRF-01'] = {
                           id: m.clubId,
                         })
                       }
-                    />,
-                  ])}
+                    />
+                    </Fragment>
+                  ))}
                 </Card>
               ) : (
                 <Card muted class="card-body row gap12">
@@ -261,7 +287,7 @@ S['PRF-01'] = {
                       label={t('interest.' + i)}
                       action={'PRF-01.interest.' + i}
                       onClick={() => {
-                        const cat = (INTERESTS.find((x) => x.id === i) || {}).cat;
+                        const cat = (INTERESTS.find((x: any) => x.id === i) as any)?.cat;
                         app.dispatch('ui.set', {
                           clubFilters: {
                             ...clubFilters.filtersOf(),
@@ -287,17 +313,17 @@ S['PRF-02'] = {
   tab: 'profile',
   title: 'editProfile.title',
   comp: function EditProfile() {
-    const u = app.uid();
     const me = app.me();
+    const [busy, run] = useBusy();
+    if (!me) return null;
     const [f, set, reset] = useForm('editProfile', {
       name: me.name,
       department: me.department,
       year: me.year,
       interests: me.interests,
       bio: me.bio || '',
-      errors: {},
+      errors: {} as any,
     });
-    const [busy, run] = useBusy();
     const dirty =
       f.name !== me.name || f.department !== me.department || f.year !== me.year || f.bio !== (me.bio || '') || f.interests.join() !== me.interests.join();
     const back = () => {
@@ -322,29 +348,22 @@ S['PRF-02'] = {
     const save = () =>
       run(async () => {
         const e: any = {};
-        if (!f.name.trim()) e.name = t('auth.err.required');
+        const nm = f.name.trim().replace(/\s+/g, ' ');
+        if (!nm) e.name = t('auth.err.required');
+        else if (nm.length < LIMITS.nameMin || nm.length > LIMITS.nameMax) e.name = t('web.err.nameLength', { min: LIMITS.nameMin, max: LIMITS.nameMax });
         if (!f.interests.length) e.interests = t('auth.setup.minInterest');
         set({
           errors: e,
         });
         if (Object.keys(e).length) return;
         if (!app.requireOnline()) return;
-        await app.api();
-        app.dispatch('user.update', {
-          userId: u,
-          patch: {
-            name: f.name.trim(),
-            department: f.department,
-            year: f.year,
-            interests: f.interests,
-            bio: f.bio,
-          },
-        });
+        const name = f.name.trim().replace(/\s+/g, ' ');
+        await A.updateProfile({ name, nameLower: trLower(name), department: f.department, year: f.year, interests: f.interests, bio: f.bio.trim() });
         reset();
         app.nav.back();
         app.toast('TST-21');
       });
-    const toggle = (id) => {
+    const toggle = (id: string) => {
       if (f.interests.includes(id))
         set({
           interests: f.interests.filter((x) => x !== id),
@@ -370,11 +389,7 @@ S['PRF-02'] = {
                 type="button"
                 className="rel"
                 data-action="PRF-02.avatar"
-                onClick={() =>
-                  app.openSheet('SHT-16', {
-                    onPick: () => {},
-                  })
-                }
+                onClick={() => changePhoto(!!me.avatarPath)}
                 aria-label={t('profile.changePhoto')}
               >
                 <Avatar user={me} size={96} />
@@ -413,7 +428,7 @@ S['PRF-02'] = {
               onClick={() =>
                 app.openSheet('SHT-02', {
                   value: f.department,
-                  onSelect: (id) =>
+                  onSelect: (id: string) =>
                     set({
                       department: id,
                     }),
@@ -429,7 +444,7 @@ S['PRF-02'] = {
               onClick={() =>
                 app.openSheet('SHT-03', {
                   value: f.year,
-                  onSelect: (id) =>
+                  onSelect: (id: string) =>
                     set({
                       year: id,
                     }),
@@ -442,7 +457,7 @@ S['PRF-02'] = {
                 <span className="field-counter">{f.interests.length}/5</span>
               </span>
               <div className="row wrap gap8">
-                {INTERESTS.map((i) => (
+                {INTERESTS.map((i: any) => (
                   <Chip
                     key={i.id}
                     label={t('interest.' + i.id)}
@@ -480,7 +495,7 @@ S['PRF-02'] = {
               tabIndex={0}
               onKeyDown={(e) => e.key === 'Enter' && app.toast('TST-20')}
             >
-              <Input label={t('auth.email')} value={me.email} locked help={t('editProfile.emailLocked')} action="PRF-02.email" />
+              <Input label={t('auth.email')} value={session.s.email || ''} locked help={t('editProfile.emailLocked')} action="PRF-02.email" />
             </div>
             <Banner kind="info" icon="shield" text={t('editProfile.privacy')} card />
           </div>
@@ -509,25 +524,24 @@ S['PRF-03'] = {
     const u = app.uid();
     const [tab, setTab] = useState(params.tab || 'active');
     const [menu, setMenu] = useState<any>(null);
+    const clubsLoad = useLoader(LD.clubsLoader());
     const ms = sel()
       .myMemberships(u)
       .map((m) => ({
         ...m,
-        club: sel().club(m.clubId),
+        club: sel().club(m.clubId)!,
       }))
-      .filter((m) => m.club);
+      .filter((m) => m.club && !m.club.isDeleted);
     const list = ms
       .filter((m) =>
         tab === 'active' ? m.status === 'active' : tab === 'pending' ? m.status === 'pending' : m.status === 'rejected' || m.status === 'removed',
       )
       .sort((a, b) => (b.decidedAt || b.appliedAt || 0) - (a.decidedAt || a.appliedAt || 0));
-    const open = (m) =>
+    const open = (m: any) =>
       app.nav.push(m.status === 'active' ? 'CLB-03' : 'CLB-05', {
         id: m.clubId,
       });
-    return [
-      <AppBar onBack={() => app.nav.back()} backAction="PRF-03.back" title={t('myclubs.title')} />,
-      <Tabs
+    return <>{<AppBar onBack={() => app.nav.back()} backAction="PRF-03.back" title={t('myclubs.title')} />}{<Tabs
         tabs={[
           {
             id: 'active',
@@ -545,9 +559,10 @@ S['PRF-03'] = {
         value={tab}
         onChange={setTab}
         action="PRF-03.tab"
-      />,
-      <Scroll routeKey="myclubs">
+      />}{<Scroll routeKey="myclubs">
         <ListState
+          status={clubsLoad.status !== 'ok' && list.length ? 'ok' : clubsLoad.status}
+          onRetry={clubsLoad.reload}
           n={4}
           emptyProps={{
             illustration: 'empty-applications',
@@ -561,16 +576,12 @@ S['PRF-03'] = {
             list.map((m) => (
               <Tile
                 key={m.clubId}
-                leading={
-                  <span className="emblem is-sm">
-                    <Icon name={m.club.iconName} size={20} />
-                  </span>
-                }
+                leading={<ClubEmblem club={m.club} cls="is-sm" size={20} />}
                 title={m.club.name}
                 subtitle={
                   <span className="row gap6 wrap">
                     {m.status === 'active' ? <RoleBadge role={m.role} /> : <StatusBadge status={m.status} />}
-                    <span className="t-caption">{app.fmt.date(m.decidedAt || m.appliedAt)}</span>
+                    <span className="t-caption">{app.fmt.date(m.decidedAt || m.appliedAt || Date.now())}</span>
                   </span>
                 }
                 action={'PRF-03.row.' + m.clubId}
@@ -580,7 +591,7 @@ S['PRF-03'] = {
                     icon="more-vertical"
                     label={t('a11y.more')}
                     action={'PRF-03.menu.' + m.clubId}
-                    onClick={(e) => {
+                    onClick={(e: any) => {
                       e.stopPropagation();
                       setMenu(m);
                     }}
@@ -598,8 +609,7 @@ S['PRF-03'] = {
             />
           )}
         </ListState>
-      </Scroll>,
-      menu ? (
+      </Scroll>}{menu ? (
         <PopMenu id="PRF-03" onClose={() => setMenu(null)}>
           <Tile
             title={t('common.open')}
@@ -654,14 +664,13 @@ S['PRF-03'] = {
                 if (sel().canReapply(menu)) startJoin(menu.clubId);
                 else
                   app.toast('TST-X4', {
-                    date: app.fmt.date(menu.retryAfter),
+                    date: app.fmt.date(menu.retryAfter || Date.now()),
                   });
               }}
             />
           ) : null}
         </PopMenu>
-      ) : null,
-    ];
+      ) : null}</>;
   },
 };
 
@@ -669,14 +678,19 @@ S['PRF-03'] = {
 S['PRF-04'] = {
   tab: 'profile',
   title: 'saved.title',
-  comp: function Saved() {
+  comp: function Saved({ route }: any) {
     const u = app.uid();
-    const ids = app.state.saved[u] || [];
+    const ids = session.s.savedIds;
+    const { status, reload } = useLoader(LD.savedLoader());
+    useLoader(LD.clubsLoader());
+    const gone: string[] = db.extra.savedGone || [];
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="PRF-04.back" title={t('saved.title')} />
-        <Scroll routeKey="saved">
+        <Scroll routeKey={route.key} onRefresh={reload} refreshAction="PRF-04.refresh">
           <ListState
+            status={status !== 'ok' && ids.length && ids.every((id) => db.posts[id] || gone.includes(id)) ? 'ok' : ids.length ? status : 'ok'}
+            onRetry={reload}
             n={3}
             variant="card"
             emptyProps={{
@@ -687,19 +701,24 @@ S['PRF-04'] = {
             {ids.length ? (
               <div className="col gap12 px16">
                 {ids.map((id) => {
-                  const p = sel().post(id);
-                  const removed = !p || p.deleted || p.hidden;
+                  const p = db.posts[id];
+                  if (!p && !gone.includes(id)) return null;
+                  const removed = !p || p.isDeleted || p.isHidden;
                   const club = p ? sel().club(p.clubId) : null;
                   const unsave = () => {
-                    const snap = app.store.get();
-                    app.dispatch('post.save', {
-                      postId: id,
-                      userId: u,
-                    });
-                    app.toast('TST-11', {
-                      saved: false,
-                      undo: () => app.store.restore(snap),
-                    });
+                    if (!app.requireOnline()) return;
+                    SV.unsavePost(u!, id)
+                      .then(() => {
+                        session.patch({ savedIds: session.s.savedIds.filter((x) => x !== id) });
+                        app.toast('TST-11', {
+                          saved: false,
+                          undo: () =>
+                            SV.restoreSaved(u!, id)
+                              .then(() => session.patch({ savedIds: [id, ...session.s.savedIds.filter((x) => x !== id)] }))
+                              .catch(handleError),
+                        });
+                      })
+                      .catch(handleError);
                   };
                   return (
                     <Card
@@ -709,11 +728,11 @@ S['PRF-04'] = {
                       onClick={() =>
                         !removed &&
                         app.nav.push('FED-02', {
-                          clubId: p.clubId,
+                          clubId: p!.clubId,
                           postId: id,
                         })
                       }
-                      label={removed ? t('saved.removed') : p.text.slice(0, 40)}
+                      label={removed ? t('saved.removed') : (p!.title || p!.text).slice(0, 40)}
                     >
                       <div className="card-body row gap12 start">
                         <div className="flex1 col gap4">
@@ -723,15 +742,14 @@ S['PRF-04'] = {
                               {t('saved.removed')}
                             </span>
                           ) : (
-                            [
+                            <>
                               <span className="t-caption">
-                                {club.name}
-                                {' \xB7 '}
-                                {app.fmt.rel(p.createdAt)}
-                              </span>,
-                              p.title ? <span className="t-title-s">{p.title}</span> : null,
-                              <p className="t-body-s c-sec clamp2">{p.text}</p>,
-                            ]
+                                {club ? club.name + ' \xB7 ' : ''}
+                                {app.fmt.rel(p!.createdAt)}
+                              </span>
+                              {p!.title ? <span className="t-title-s">{p!.title}</span> : null}
+                              <p className="t-body-s c-sec clamp2">{p!.text}</p>
+                            </>
                           )}
                         </div>
                         <IconButton
@@ -739,7 +757,7 @@ S['PRF-04'] = {
                           label={t('feed.unsave')}
                           brand
                           action={'PRF-04.unsave.' + id}
-                          onClick={(e) => {
+                          onClick={(e: any) => {
                             e.stopPropagation();
                             unsave();
                           }}
@@ -770,18 +788,25 @@ S['PRF-04'] = {
 S['SET-01'] = {
   tab: 'profile',
   title: 'settings.title',
-  comp: function Settings() {
-    const s = app.state.session;
+  comp: function Settings({ route }: any) {
+    const s = prefs.get();
     const scale = s.textScale || 1;
-    const group = (title, rows) => (
+    const group = (title: string, rows: any[]) => (
       <div className="col gap8">
         <span className="t-overline px16">{title}</span>
         <div className="px16">
-          <Card>{rows.map((r, i) => [i ? <div className="divider" /> : null, r])}</Card>
+          <Card>
+            {rows.map((r, i) => (
+              <Fragment key={i}>
+                {i ? <div className="divider" /> : null}
+                {r}
+              </Fragment>
+            ))}
+          </Card>
         </div>
       </div>
     );
-    const row = (icon, title, sub, action, onClick, opts = {}) => (
+    const row = (icon: string, title: string, sub: string | null, action: string, onClick: () => void, opts: { danger?: boolean; noChevron?: boolean } = {}) => (
       <Tile
         inCard
         leading={<Icon name={icon} size={20} class={opts.danger ? 'c-danger' : 'c-brand'} />}
@@ -796,7 +821,7 @@ S['SET-01'] = {
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="SET-01.back" title={t('settings.title')} />
-        <Scroll routeKey="settings">
+        <Scroll routeKey={route.key}>
           <div className="col gap20 pb24">
             {group(t('settings.group.appearance'), [
               row('sun', t('settings.theme'), t('theme.' + (s.theme || 'system')), 'SET-01.theme', () => app.openSheet('SHT-17')),
@@ -825,11 +850,7 @@ S['SET-01'] = {
                     },
                   ]}
                   value={String(scale)}
-                  onChange={(v) =>
-                    app.dispatch('session.set', {
-                      textScale: Number(v),
-                    })
-                  }
+                  onChange={(v: string) => setPrefs({ textScale: Number(v) })}
                   action="SET-01.textScale"
                 />
                 <p className="t-body-m c-sec">{t('settings.textPreview')}</p>
@@ -858,9 +879,8 @@ S['SET-01'] = {
               }),
             ])}
             <p className="t-caption center">
-              v{app.APP_VERSION}
-              {' ('}
-              {t('common.demo').toLowerCase()})
+              v{app.APP_VERSION} · Web
+              {DEMO_ENABLED ? ` (${t('common.demo').toLowerCase()})` : ''}
             </p>
           </div>
         </Scroll>
@@ -873,16 +893,18 @@ S['SET-01'] = {
 S['SET-02'] = {
   tab: 'profile',
   title: 'blocked.title',
-  comp: function Blocked() {
-    const u = app.uid();
-    const me = app.me();
-    const list = (me.blocked || []).map((id) => sel().user(id)).filter(Boolean);
+  comp: function Blocked({ route }: any) {
+    const ids = session.s.blocked;
+    const { status, reload } = useLoad(ids.length ? 'blockedUsers:' + ids.join(',') : null, () => loadUsers(ids));
+    const list = ids.map((id) => sel().user(id)).filter((x): x is NonNullable<typeof x> => !!x);
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="SET-02.back" title={t('blocked.title')} />
-        <Scroll routeKey="blocked">
+        <Scroll routeKey={route.key}>
           <p className="t-body-s c-sec px16 pb16">{t('blocked.desc')}</p>
-          {list.length ? (
+          {ids.length && !list.length && status !== 'ok' ? (
+            status === 'error' ? <EmptyState illustration="error" title={t('web.err.generic')} cta={t('common.retry')} ctaAction="SET-02.retry" onCta={reload} compact /> : <SkeletonList n={3} />
+          ) : list.length ? (
             list.map((usr) => (
               <UserRow
                 key={usr.id}
@@ -900,18 +922,18 @@ S['SET-02'] = {
                     variant="outline"
                     label={t('userprofile.unblock')}
                     action={'SET-02.unblock.' + usr.id}
-                    onClick={(e) => {
+                    onClick={(e: any) => {
                       e.stopPropagation();
-                      const snap = app.store.get();
-                      app.dispatch('user.unblock', {
-                        userId: u,
-                        targetId: usr.id,
-                      });
-                      app.toast('TST-09', {
-                        name: usr.name,
-                        unblocked: true,
-                        undo: () => app.store.restore(snap),
-                      });
+                      if (!app.requireOnline()) return;
+                      A.unblockUser(usr.id)
+                        .then(() =>
+                          app.toast('TST-09', {
+                            name: usr.name,
+                            unblocked: true,
+                            undo: () => A.blockUser(usr.id).catch(handleError),
+                          }),
+                        )
+                        .catch(handleError);
                     }}
                   />
                 }
@@ -930,40 +952,39 @@ S['SET-02'] = {
 S['SET-03'] = {
   tab: 'profile',
   title: 'deleteAccount.title',
-  comp: function DeleteAccount() {
+  comp: function DeleteAccount({ route }: any) {
     const u = app.uid();
+    const [busy, run] = useBusy();
+    const [progress, setProgress] = useState('');
     const [f, set, reset] = useForm('deleteAccount', {
       step: 1,
-      reason: null,
+      reason: null as string | null,
       reasonText: '',
       password: '',
       confirm: '',
       err: '',
     });
-    const [busy, run] = useBusy();
     const presidentOf = sel()
       .myMemberships(u)
       .filter((m) => m.status === 'active' && m.role === 'president')
       .map((m) => sel().club(m.clubId))
-      .filter(Boolean);
+      .filter((c): c is NonNullable<typeof c> => !!c);
     const confirmDelete = () =>
       run(async () => {
-        if (f.password !== DEMO_PASSWORD) {
-          set({
-            err: t('auth.err.wrongPassword'),
-          });
-          return;
-        }
         if (!app.requireOnline()) return;
-        await app.api({
-          delay: 1200,
-        });
-        app.dispatch('user.delete', {
-          userId: u,
-        });
+        try {
+          await AU.reauth(f.password);
+        } catch (e) {
+          if (errCode(e) === 'wrongCredentials') { set({ err: t('auth.err.wrongPassword') }); return; }
+          throw e;
+        }
+        // Sunucudaki güncel durumla son kontrol: başkanlık devredilmeden silinemez.
+        const pre = await A.precheckDeletion();
+        if (pre.blockedBy.length) { set({ step: 1 }); app.toast('TST-X10'); return; }
+        await A.deleteAccount((step) => setProgress(step));
         reset();
         app.ui.closeAllSheets();
-        app.nav.resetTo('AUT-01');
+        await session.logout();
         app.toast('TST-22');
       });
     const reasons = ['noUse', 'tooMany', 'privacy', 'graduated', 'other'];
@@ -981,12 +1002,10 @@ S['SET-03'] = {
           title={t('deleteAccount.title')}
           subtitle={`${f.step}/3`}
         />
-        <Scroll routeKey="delete">
+        <Scroll routeKey={route.key}>
           <div className="col gap16 px16 pb24">
             {f.step === 1
-              ? [
-                  <Banner kind="danger" text={t('deleteAccount.warning')} card />,
-                  <Card class="card-body col gap8">
+              ? <>{<Banner kind="danger" text={t('deleteAccount.warning')} card />}{<Card class="card-body col gap8">
                     <span className="t-overline">{t('deleteAccount.deleted')}</span>
                     <ul className="t-body-s c-sec col gap4">
                       {['memberships', 'applications', 'tickets', 'notifications'].map((k) => (
@@ -995,8 +1014,7 @@ S['SET-03'] = {
                     </ul>
                     <span className="t-overline mt8">{t('deleteAccount.kept')}</span>
                     <p className="t-body-s c-sec">{t('deleteAccount.keptDesc')}</p>
-                  </Card>,
-                  presidentOf.length ? (
+                  </Card>}{presidentOf.length ? (
                     <Card
                       class="card-body col gap8"
                       style={{
@@ -1024,18 +1042,15 @@ S['SET-03'] = {
                         </div>
                       ))}
                     </Card>
-                  ) : null,
-                ]
+                  ) : null}</>
               : null}
             {f.step === 2 ? (
               <>
                 <h2 className="t-title-m">{t('deleteAccount.reasonTitle')}</h2>
                 <p className="t-body-s c-sec">{t('common.optional')}</p>
                 <Card>
-                  {reasons.map((r, i) => [
-                    i ? <div className="divider" /> : null,
-                    <OptionRow
-                      key={r}
+                  {reasons.map((r, i) => <Fragment key={r}>{i ? <div className="divider" /> : null}{<OptionRow
+                      
                       label={t('deleteAccount.reason.' + r)}
                       checked={f.reason === r}
                       action={'SET-03.reason.' + r}
@@ -1044,14 +1059,13 @@ S['SET-03'] = {
                           reason: r,
                         })
                       }
-                    />,
-                  ])}
+                    />}</Fragment>)}
                 </Card>
                 <Input
                   multiline
                   rows={3}
                   value={f.reasonText}
-                  onInput={(v) =>
+                  onInput={(v: string) =>
                     set({
                       reasonText: v.slice(0, 300),
                     })
@@ -1072,7 +1086,7 @@ S['SET-03'] = {
                   type="password"
                   icon="key-round"
                   value={f.password}
-                  onInput={(v) =>
+                  onInput={(v: string) =>
                     set({
                       password: v,
                       err: '',
@@ -1084,7 +1098,7 @@ S['SET-03'] = {
                 <Input
                   label={t('deleteAccount.typeDelete')}
                   value={f.confirm}
-                  onInput={(v) =>
+                  onInput={(v: string) =>
                     set({
                       confirm: v,
                     })
@@ -1092,6 +1106,7 @@ S['SET-03'] = {
                   placeholder="S\u0130L"
                   action="SET-03.confirmWord"
                 />
+                {busy && progress ? <p className="t-caption c-sec" role="status">{t('web.delete.progress.' + progress)}</p> : null}
               </>
             ) : null}
           </div>
@@ -1133,9 +1148,9 @@ S['SET-03'] = {
 S['SET-04'] = {
   tab: 'profile',
   title: 'about.title',
-  comp: function About() {
+  comp: function About({ route }: any) {
     const [open, setOpen] = useState<any>({});
-    const toggle = (k) =>
+    const toggle = (k: string) =>
       setOpen({
         ...open,
         [k]: !open[k],
@@ -1148,7 +1163,7 @@ S['SET-04'] = {
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="SET-04.back" title={t('about.title')} />
-        <Scroll routeKey="about">
+        <Scroll routeKey={route.key}>
           <div className="col gap20 px16 pb24">
             <div
               className="col gap8"
@@ -1182,11 +1197,7 @@ S['SET-04'] = {
             </div>
             <Card class="card-body col gap8">
               <span className="t-overline">{t('about.team')}</span>
-              {[
-                ['Ekin Yurdakul', t('about.team.pm')],
-                ['Lale Korkut', t('about.team.design')],
-                ['Baran Çelik', t('about.team.dev')],
-              ].map(([n, r]) => (
+              {TEAM.map(({ name: n, role }) => [n, t(role)]).map(([n, r]) => (
                 <div key={n} className="row gap10">
                   <Avatar name={n} seed={n} size={32} />
                   <span className="flex1 t-body-m c-heading">{n}</span>
@@ -1302,19 +1313,18 @@ S['SET-04'] = {
 S['SET-05'] = {
   tab: 'profile',
   title: 'support.title',
-  comp: function Support() {
-    const u = app.uid();
+  comp: function Support({ route }: any) {
     const [q, setQ] = useState('');
     const [open, setOpen] = useState<any>(null);
-    const [f, set, reset] = useForm('support', {
-      subject: null,
-      message: '',
-      attached: false,
-      sent: null,
-      errors: {},
-    });
     const [busy, run] = useBusy();
     const [menu, setMenu] = useState(false);
+    const [file, setFile] = useState<File | null>(null);
+    const [f, set, reset] = useForm('support', {
+      subject: null as string | null,
+      message: '',
+      sent: null as string | null,
+      errors: {} as any,
+    });
     const faqs = [1, 2, 3, 4, 5, 6, 7, 8]
       .map((i) => ({
         i,
@@ -1333,12 +1343,8 @@ S['SET-05'] = {
         });
         if (Object.keys(e).length) return;
         if (!app.requireOnline()) return;
-        await app.api();
-        const no = app.dispatch('support.send', {
-          userId: u,
-          subject: f.subject,
-          message: f.message.trim(),
-        });
+        const no = await A.sendSupport(f.subject!, f.message.trim(), file);
+        setFile(null);
         set({
           sent: no,
         });
@@ -1346,9 +1352,7 @@ S['SET-05'] = {
           no,
         });
       });
-    return [
-      <AppBar onBack={() => app.nav.back()} backAction="SET-05.back" title={t('support.title')} />,
-      <Scroll routeKey="support">
+    return <>{<AppBar onBack={() => app.nav.back()} backAction="SET-05.back" title={t('support.title')} />}{<Scroll routeKey={route.key}>
         <div className="col gap16 px16 pb24">
           <Input icon="search" placeholder={t('support.searchFaq')} value={q} onInput={setQ} action="SET-05.search" ariaLabel={t('support.searchFaq')} />
           <h2 className="t-title-s">{t('support.faq')}</h2>
@@ -1406,8 +1410,9 @@ S['SET-05'] = {
                 multiline
                 rows={4}
                 value={f.message}
-                onInput={(v) =>
+                onInput={(v: string) =>
                   set({
+                    errors: { ...f.errors, message: null },
                     message: v.slice(0, 500),
                   })
                 }
@@ -1419,27 +1424,25 @@ S['SET-05'] = {
               <div className="row gap8">
                 <Button
                   size="sm"
-                  variant={f.attached ? 'tonal' : 'outline'}
-                  icon={f.attached ? 'circle-check' : 'image'}
-                  label={f.attached ? t('support.attached') : t('support.attach')}
+                  variant={file ? 'tonal' : 'outline'}
+                  icon={file ? 'circle-check' : 'image'}
+                  label={file ? t('support.attached') : t('support.attach')}
                   action="SET-05.attach"
                   onClick={() =>
                     app.openSheet('SHT-16', {
-                      onPick: () =>
-                        set({
-                          attached: true,
-                        }),
+                      hasPhoto: !!file,
+                      onPick: (fl: File | undefined) => fl && setFile(fl),
+                      onRemove: () => setFile(null),
                     })
                   }
                 />
-                <span className="t-caption">{t('common.optional')}</span>
+                <span className="t-caption ellipsis flex1">{file ? file.name : t('common.optional')}</span>
               </div>
               <Button full label={t('common.send')} loading={busy} action="SET-05.send" onClick={send} />
             </>
           )}
         </div>
-      </Scroll>,
-      menu ? (
+      </Scroll>}{menu ? (
         <PopMenu id="SET-05" onClose={() => setMenu(false)}>
           {subjects.map((s) => (
             <Tile
@@ -1460,7 +1463,6 @@ S['SET-05'] = {
             />
           ))}
         </PopMenu>
-      ) : null,
-    ];
+      ) : null}</>;
   },
 };
