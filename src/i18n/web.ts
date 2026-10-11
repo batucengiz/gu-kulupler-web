@@ -51,6 +51,8 @@ export const WEB_TR: Record<string, string> = {
   'web.about.team.web': 'Web uygulaması',
   'about.desc': 'Gümüşhane Üniversitesi öğrenci kulüpleri için TÜBİTAK 2209-A Üniversite Öğrencileri Araştırma Projeleri kapsamında geliştirilmiştir.',
   'about.build': 'Web sürümü',
+  'web.admin.advisorCannotBePresident': 'Danışman, aynı kulübün başkanı olamaz.',
+  'admin.wau': 'Yeni üyelikler (son 8 hafta)',
 };
 export const WEB_EN: Record<string, string> = {
   'web.err.generic': 'Something went wrong. Please try again.',
@@ -104,4 +106,6 @@ export const WEB_EN: Record<string, string> = {
   'web.about.team.web': 'Web app',
   'about.desc': 'Built for Gümüşhane University student clubs as a TÜBİTAK 2209-A undergraduate research project.',
   'about.build': 'Web edition',
+  'web.admin.advisorCannotBePresident': "The advisor cannot be the club's president.",
+  'admin.wau': 'New memberships (last 8 weeks)',
 };

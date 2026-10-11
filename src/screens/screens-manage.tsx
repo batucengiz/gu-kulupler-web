@@ -1256,7 +1256,7 @@ S['MGT-05'] = {
                   {f.cover.url ? (
                     <img src={f.cover.url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
                   ) : (
-                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0 }} />
+                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
                   )}
                   <span
                     className="btn btn-sm btn-outline"
@@ -2578,7 +2578,7 @@ S['MGT-09'] = {
                   {f.cover.url ? (
                     <img src={f.cover.url} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
                   ) : (
-                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0, height: '100%' }} />
+                    <Cover seed={f.cover.seed} icon={club.iconName} palette={f.cover.palette} pattern={f.cover.pattern} path={f.cover.path} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
                   )}
                   <span
                     className="badge badge-neutral"

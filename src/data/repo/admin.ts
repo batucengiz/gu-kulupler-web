@@ -110,3 +110,30 @@ export async function stats() {
 export async function listAllClubs(): Promise<Club[]> {
   return fromQuery<Club>(await getDocs(query(col(C.clubs)))).sort((a, b) => a.nameLower.localeCompare(b.nameLower, 'tr'));
 }
+
+/** ADM-01: aralıktaki yeni kullanıcı sayısı. */
+export async function countNewUsers(sinceMs: number): Promise<number> {
+  const { Timestamp } = await import('firebase/firestore');
+  const s = await getCountFromServer(query(col(C.users), where('isDeleted', '==', false), where('createdAt', '>=', Timestamp.fromMillis(sinceMs))));
+  return s.data().count;
+}
+/** ADM-01: aralıkta biten yayımlanmış etkinliklerin katılım özeti (goingCount = kayıt, attendedCount = yoklama). */
+export async function pastEventsSummary(sinceMs: number, untilMs: number): Promise<{ events: number; registered: number; attended: number }> {
+  const { Timestamp } = await import('firebase/firestore');
+  const qs = await getDocs(query(col(C.events), where('status', '==', 'published'), where('endsAt', '>=', Timestamp.fromMillis(sinceMs)), where('endsAt', '<', Timestamp.fromMillis(untilMs))));
+  const list = fromQuery<{ goingCount: number; attendedCount: number; isDeleted: boolean }>(qs).filter((e) => !e.isDeleted);
+  return { events: list.length, registered: list.reduce((a, e) => a + (e.goingCount || 0), 0), attended: list.reduce((a, e) => a + (e.attendedCount || 0), 0) };
+}
+/** ADM-05: askıdaki kullanıcılar. */
+export async function listSuspendedUsers(): Promise<User[]> {
+  return fromQuery<User>(await getDocs(query(col(C.users), where('status', '==', 'suspended'), where('isDeleted', '==', false))));
+}
+/** ADM-05: verilen kullanıcıların tüm üyelikleri (30'luk `in` parçaları). */
+export async function membershipsOfUsers(userIds: string[]): Promise<Membership[]> {
+  const out: Membership[] = [];
+  for (let i = 0; i < userIds.length; i += 30) {
+    const part = userIds.slice(i, i + 30); if (!part.length) continue;
+    out.push(...fromQuery<Membership>(await getDocs(query(col(C.memberships), where('userId', 'in', part)))));
+  }
+  return out;
+}

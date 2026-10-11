@@ -106,7 +106,7 @@ export function useForm<T extends Record<string, any> = any>(key: string, init: 
 }
 export function useBusy(): [boolean, <T>(fn: () => Promise<T>) => Promise<T | undefined>] {
   const [busy, setBusy] = useState(false); const ref = useRef(false); const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []); // StrictMode: bağla-çöz-bağla
   const run = useCallback(async <T,>(fn: () => Promise<T>) => {
     if (ref.current) return undefined; ref.current = true; setBusy(true);
     try { return await fn(); } catch (e) { handleError(e); return undefined; } finally { ref.current = false; if (alive.current) setBusy(false); }

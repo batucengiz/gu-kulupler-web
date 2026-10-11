@@ -252,3 +252,84 @@ export const savedLoader = () =>
     db.setExtra('savedGone', gone);
     await loadUsers(posts.map((p) => p?.authorId || ''));
   });
+
+/* ===================== süper admin ===================== */
+/** ADM-01 aralığının başlangıcı: 7 gün, 30 gün ya da dönem başı (Eylül 1 / Şubat 1). */
+export function adminRangeStart(range: string, nowMs = Date.now()) {
+  if (range === '7') return nowMs - 7 * 864e5;
+  if (range === '30') return nowMs - 30 * 864e5;
+  const d = new Date(nowMs); const y = d.getFullYear(); const m = d.getMonth();
+  return (m >= 8 ? new Date(y, 8, 1) : m >= 1 ? new Date(y, 1, 1) : new Date(y - 1, 8, 1)).getTime();
+}
+/** Tüm kulüpler (askıdakiler dahil). */
+export const adminClubsLoader = () =>
+  L('adm:clubs', async () => {
+    const AD = await import('../data/repo/admin');
+    const clubs = await AD.listAllClubs();
+    db.putClubs(clubs);
+    await loadUsers(clubs.map((c) => c.presidentId));
+  });
+/** ADM-01: KPI + 8 haftalık yeni üyelik grafiği (CD-46) + katılım oranı + açık şikayetler. */
+export const adminOverviewLoader = (range: string) =>
+  L('adm:overview:' + range, async () => {
+    const AD = await import('../data/repo/admin');
+    const AC = await import('../data/repo/activity');
+    const RP = await import('../data/repo/reports');
+    const nowMs = Date.now(); const since = adminRangeStart(range, nowMs);
+    const weekStarts = Array.from({ length: 8 }, (_, k) => nowMs - (8 - k) * 7 * 864e5);
+    const [stats, newUsers, weekly, past, open] = await Promise.all([
+      AD.stats(),
+      AD.countNewUsers(since),
+      AC.countByWeek(['member_joined', 'application_approved'], weekStarts),
+      AD.pastEventsSummary(since, nowMs),
+      RP.listReports('open'),
+    ]);
+    db.setExtra('adm:overview:' + range, { stats, newUsers, weekly, past, openGroups: RP.groupReports(open.items).length });
+  });
+/** ADM-04: şikayet grupları + hedef önizlemeleri. */
+export const adminReportsLoader = (status: 'open' | 'resolved') =>
+  L('adm:reports:' + status, async () => {
+    const RP = await import('../data/repo/reports');
+    const P = await import('../data/repo/posts');
+    const CM = await import('../data/repo/comments');
+    const page = await RP.listReports(status);
+    const groups = RP.groupReports(page.items);
+    const of = (type: string) => [...new Set(groups.filter((g) => g.targetType === type).map((g) => g.targetId))];
+    const previews: Record<string, string | null> = {};
+    const [posts, comments, events] = await Promise.all([
+      Promise.all(of('post').map((id) => P.getPost(id, { uid: session.s.uid || '', isManager: false, isSuper: true }).catch(() => null))),
+      Promise.all(of('comment').map((id) => CM.getComment(id, true).catch(() => null))),
+      E.getEvents(of('event')).catch(() => []),
+    ]);
+    posts.forEach((p) => p && (previews['post_' + p.id] = p.title || p.text));
+    comments.forEach((c) => c && (previews['comment_' + c.id] = c.text));
+    events.forEach((e) => (previews['event_' + e.id] = e.title));
+    db.putPosts(posts.filter((p): p is NonNullable<typeof p> => !!p));
+    db.putEvents(events);
+    const missingClubs = of('club').filter((id) => !db.clubs[id]);
+    if (missingClubs.length) { const { getClubs } = await import('../data/repo/clubs'); db.putClubs(await getClubs(missingClubs).catch(() => [])); }
+    await loadUsers([...of('user'), ...groups.flatMap((g) => g.reports.map((r) => r.reporterId))]);
+    db.setExtra('adm:reports:' + status, { groups, previews });
+  });
+/** ADM-05: kullanıcı listesi (ad öneki / e-posta / askıdakiler / yöneticiler) + bu kullanıcıların üyelikleri. */
+export const adminUsersLoader = (filter: string, q: string) =>
+  L(`adm:users:${filter}:${q}`, async () => {
+    const AD = await import('../data/repo/admin');
+    const U = await import('../data/repo/users');
+    const term = trLowerQ(q.trim());
+    let users: import('../data/models').User[];
+    if (term.includes('@')) users = await U.findUserByEmail(term);
+    else if (filter === 'suspended') users = await AD.listSuspendedUsers();
+    else if (filter === 'managers') users = await U.getUsers([...(await AD.listManagerUserIds())]);
+    else users = (await U.listUsersByName(term)).items;
+    if (term && !term.includes('@')) users = users.filter((u) => trLowerQ(u.name).includes(term));
+    if (filter === 'suspended') users = users.filter((u) => u.status === 'suspended');
+    users = users.filter((u) => !u.isDeleted).sort((a, b) => a.name.localeCompare(b.name, 'tr')).slice(0, 80);
+    const ms = await AD.membershipsOfUsers(users.map((u) => u.id));
+    const clubIds = [...new Set(ms.map((m) => m.clubId))].filter((id) => !db.clubs[id]);
+    if (clubIds.length) { const { getClubs } = await import('../data/repo/clubs'); db.putClubs(await getClubs(clubIds).catch(() => [])); }
+    const byUser: Record<string, import('../data/models').Membership[]> = {};
+    ms.forEach((m) => (byUser[m.userId] = [...(byUser[m.userId] || []), m]));
+    db.setExtra(`adm:users:${filter}:${q}`, { ids: users.map((u) => u.id), byUser });
+  });
+const trLowerQ = (s: string) => s.toLocaleLowerCase('tr');
