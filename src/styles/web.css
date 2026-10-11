@@ -1,0 +1,45 @@
+/* Web kabuğu — tasarım bileşen CSS'inin (gu.css) üzerine tarayıcıya özgü yerleşim. */
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+body { background: #F6F7F9; overscroll-behavior: none; }
+html[data-theme="dark"] body { background: #0B0F17; }
+
+/* Tarayıcıda telefon çentiği/durum çubuğu yok: güvenli alanlar cihazdan gelir. */
+.gu-root.web-shell {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --nav-h: calc(64px + var(--safe-bottom));
+  display: flex; height: 100vh; height: 100dvh; width: 100%; overflow: hidden;
+}
+.web-main { flex: 1; min-width: 0; height: 100%; display: flex; justify-content: center; position: relative; }
+.web-device.device.is-fluid { width: 100%; height: 100%; border-radius: 0; }
+.gu-root.web-shell .screen { padding-top: var(--safe-top); }
+.gu-root.web-shell .screen.full-bleed { padding-top: 0; }
+
+/* Masaüstü: sol menü + ortalanmış uygulama sütunu */
+.web-shell.is-desktop .web-main {
+  background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--brand-primary) 6%, var(--bg-canvas)), var(--bg-canvas) 70%);
+}
+.web-shell.is-desktop .web-device.device.is-fluid {
+  max-width: 640px; border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft);
+  box-shadow: 0 0 40px rgba(16, 24, 40, .06);
+}
+.web-side { width: 248px; flex: none; height: 100%; box-sizing: border-box; }
+.web-side .spacer { flex: 1; }
+.web-side .menu-item .badge { margin-left: auto; }
+
+/* Masaüstünde sheet'ler sütunun ortasında kart olarak açılır */
+@media (min-width: 1024px) {
+  .web-shell .sheet { left: 50%; right: auto; width: min(560px, calc(100% - 32px)); transform: translateX(-50%); bottom: 24px; border-radius: var(--r-xl); max-height: calc(100% - 48px); animation: webSheetIn var(--motion-slow) var(--ease-emphasized); }
+  .web-shell .sheet.sheet-full { top: 24px; }
+  .web-shell .sheet .sheet-handle { display: none; }
+  @keyframes webSheetIn { from { opacity: 0; transform: translate(-50%, 24px); } to { opacity: 1; transform: translate(-50%, 0); } }
+}
+/* Fare kullanıcıları için ince kaydırma çubuğu (dokunmatik cihazlarda gizli kalır) */
+@media (hover: hover) and (pointer: fine) {
+  .gu-root.web-shell .screen-scroll, .gu-root.web-shell .sheet-body { scrollbar-width: thin; }
+  .gu-root.web-shell .screen-scroll::-webkit-scrollbar { display: block; width: 8px; }
+  .gu-root.web-shell .screen-scroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 4px; }
+}
+.web-boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+.img-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); color: #fff; }
+.web-video { width: 100%; height: 100%; object-fit: cover; }

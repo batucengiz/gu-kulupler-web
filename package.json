@@ -1,0 +1,41 @@
+{
+  "name": "gu-kulupler-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "GÜ Kulüpler — Gümüşhane Üniversitesi öğrenci kulüpleri web uygulaması (Flutter mobil uygulamasıyla aynı Firebase backend'i)",
+  "scripts": {
+    "dev": "vite",
+    "dev:emu": "vite --mode emulator",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "gen": "node scripts/gen-i18n.mjs && node scripts/gen-icons.mjs",
+    "emulators": "firebase emulators:start --only auth,firestore,storage --project demo-gu-kulupler --config firebase/firebase.json",
+    "seed": "node scripts/seed.mjs",
+    "test:rules": "node --test firebase/test/",
+    "e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.1.0",
+    "@fontsource/montserrat": "^5.1.0",
+    "firebase": "11.1.0",
+    "jsqr": "1.4.0",
+    "qrcode": "1.5.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "4.0.1",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "lucide": "0.468.0",
+    "playwright-core": "1.48.2",
+    "typescript": "5.6.3",
+    "vite": "5.4.11",
+    "vitest": "2.1.8"
+  }
+}
