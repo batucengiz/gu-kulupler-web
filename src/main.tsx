@@ -11,10 +11,10 @@ import './styles/gu.css';
 import './styles/web.css';
 // ekran, sheet ve dialog kayıtları (yan etkiyle kayıt olur)
 import './screens/dialogs';
-// import './screens/sheets';
+import './screens/sheets';
 import './screens/screens-auth';
 import './screens/screens-clubs';
-// import './screens/screens-events';
+import './screens/screens-events';
 // import './screens/screens-manage';
 // import './screens/screens-profile';
 // import './screens/screens-admin';

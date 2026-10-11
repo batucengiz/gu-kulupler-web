@@ -30,6 +30,13 @@ export const WEB_TR: Record<string, string> = {
   'web.install': 'Uygulamayı yükle',
   'web.skip': 'İçeriğe geç',
   'web.desktop.manage': 'Yönetim',
+  'web.report.already': 'Bunu zaten bildirdin. İnceleme sürüyor.',
+  'web.image.invalid': "Bazı dosyalar eklenmedi: yalnızca 20 MB'tan küçük görseller seçilebilir.",
+  'web.event.copySuffix': ' (kopya)',
+  'a11y.prev': 'Önceki',
+  'a11y.next': 'Sonraki',
+  'web.notif.unsupported': 'Bu tarayıcı desteklemiyor',
+  'web.ticket.brightness': 'Okutmadan önce ekran parlaklığını artır',
 };
 export const WEB_EN: Record<string, string> = {
   'web.err.generic': 'Something went wrong. Please try again.',
@@ -62,4 +69,11 @@ export const WEB_EN: Record<string, string> = {
   'web.install': 'Install app',
   'web.skip': 'Skip to content',
   'web.desktop.manage': 'Manage',
+  'web.report.already': 'You already reported this. It is under review.',
+  'web.image.invalid': 'Some files were skipped: only images under 20 MB can be added.',
+  'web.event.copySuffix': ' (copy)',
+  'a11y.prev': 'Previous',
+  'a11y.next': 'Next',
+  'web.notif.unsupported': 'Not supported by this browser',
+  'web.ticket.brightness': 'Turn up screen brightness before scanning',
 };

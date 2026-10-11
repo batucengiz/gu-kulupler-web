@@ -1,7 +1,7 @@
 import { getDoc, getDocs, setDoc, query, where, orderBy, limit, startAfter, writeBatch, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { C, col, ref, ids, type Page } from '../db';
-import { fromQuery, baseCreate, now, AppError, touch } from '../fs';
+import { fromQuery, fromDoc, baseCreate, now, AppError, touch } from '../fs';
 import type { Report } from '../models';
 import { addNotification } from './notifications';
 import { LIMITS } from '../../lib/constants';
@@ -28,6 +28,8 @@ export async function listReports(status: 'open' | 'resolved', cursor?: QueryDoc
   const qs = await getDocs(query(col(C.reports), where('status', '==', status), orderBy('createdAt', 'desc'), ...(cursor ? [startAfter(cursor)] : []), limit(size)));
   return { items: fromQuery<Report>(qs), cursor: qs.docs[qs.docs.length - 1] || null, hasMore: qs.docs.length === size };
 }
+/** Süper yönetici: tek bildirim (bildirimden açılan SHT-26 için). */
+export async function getReport(id: string): Promise<Report | null> { return fromDoc<Report>(await getDoc(ref(C.reports, id))); }
 export async function listReportsForTarget(type: string, targetId: string): Promise<Report[]> {
   return fromQuery<Report>(await getDocs(query(col(C.reports), where('targetType', '==', type), where('targetId', '==', targetId), where('status', '==', 'open'))));
 }

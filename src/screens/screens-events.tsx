@@ -20,7 +20,6 @@ import {
   NotificationRow,
   Picker,
   Progress,
-  SCANNING,
   SCREENS,
   Scroll,
   Segmented,
@@ -38,12 +37,24 @@ import {
   today0,
   useEffect,
   useState,
+  ClubEmblem,
+  LD,
+  useLoader,
+  A,
+  handleError,
+  notifPermission,
+  session,
+  SkeletonList,
+  Fragment,
 } from '../ui/kit';
+import { NotFoundInline } from './screens-clubs';
+import * as R from '../data/repo/rsvps';
+import { ticketQrPayload } from '../lib/util';
 /* ===== SCREENS: EVT · NTF ===== */
 const t = (k: string, p?: any) => app.t(k, p);
 const S = SCREENS;
 const sel = () => app.sel;
-const DEFAULT_EF = {
+const DEFAULT_EF: any = {
   date: 'all',
   from: null,
   to: null,
@@ -57,14 +68,14 @@ const efOf = () => ({
   ...DEFAULT_EF,
   ...(app.state.ui.eventFilters || {}),
 });
-const efCount = (f) =>
+const efCount = (f: any) =>
   (f.date !== 'all' ? 1 : 0) +
   (f.clubs.length ? 1 : 0) +
   (f.types.length ? 1 : 0) +
   (f.visibility !== 'all' ? 1 : 0) +
   (f.freeOnly ? 1 : 0) +
   (f.sort !== 'date' ? 1 : 0);
-function applyEventFilters(list, f, u) {
+function applyEventFilters(list: any[], f: any, _u?: string | null) {
   let out = list.slice();
   const t0 = today0();
   if (f.date === 'today') out = out.filter((e) => startOfDay(e.startsAt) === t0);
@@ -75,11 +86,11 @@ function applyEventFilters(list, f, u) {
   if (f.types.length) out = out.filter((e) => f.types.includes(e.type));
   if (f.visibility !== 'all') out = out.filter((e) => e.visibility === f.visibility);
   if (f.freeOnly) out = out.filter((e) => !sel().isFull(e));
-  if (f.sort === 'popular') out.sort((a, b) => sel().registered(b.id).length - sel().registered(a.id).length);
+  if (f.sort === 'popular') out.sort((a, b) => sel().registeredCount(b) - sel().registeredCount(a));
   else out.sort((a, b) => a.startsAt - b.startsAt);
   return out;
 }
-eventFilters = {
+export const eventFilters = {
   DEFAULT_EF,
   efOf,
   applyEventFilters,
@@ -102,7 +113,8 @@ S['EVT-01'] = {
       return d.getTime();
     });
     const [selDay, setSelDay] = useState(today0());
-    const [tick, setTick] = useState(0);
+    const { status, reload } = useLoader(LD.upcomingLoader());
+    const monthLoad = useLoader(view === 'calendar' ? LD.monthLoader(month) : null);
     let list = applyEventFilters(
       sel()
         .visibleEvents(u)
@@ -115,25 +127,26 @@ S['EVT-01'] = {
     if (chip === 'week') list = list.filter((e) => e.startsAt < t0 + 7 * DAY);
     if (chip === 'mine') list = list.filter((e) => sel().isMemberOf(e.clubId, u));
     if (chip === 'public') list = list.filter((e) => e.visibility === 'public');
-    const groups = [
-      ['today', (e) => startOfDay(e.startsAt) === t0],
-      ['tomorrow', (e) => startOfDay(e.startsAt) === t0 + DAY],
-      ['week', (e) => e.startsAt > t0 + DAY && e.startsAt < t0 + 7 * DAY],
-      ['later', (e) => e.startsAt >= t0 + 7 * DAY],
-      ['pastGroup', (e) => e.startsAt < t0],
-    ]
-      .map(([k, fn]) => [k, list.filter(fn)])
+    const groups = (
+      [
+        ['today', (e: any) => startOfDay(e.startsAt) === t0],
+        ['tomorrow', (e: any) => startOfDay(e.startsAt) === t0 + DAY],
+        ['week', (e: any) => e.startsAt >= t0 + 2 * DAY && e.startsAt < t0 + 7 * DAY],
+        ['later', (e: any) => e.startsAt >= t0 + 7 * DAY],
+        ['pastGroup', (e: any) => e.startsAt < t0],
+      ] as Array<[string, (e: any) => boolean]>
+    )
+      .map(([k, fn]) => [k, list.filter(fn)] as const)
       .filter(([, l]) => l.length);
     const all = sel().visibleEvents(u);
-    const dots = (k) => all.filter((e) => dayKey(e.startsAt) === k).length;
+    const dots = (k: string) => all.filter((e) => dayKey(e.startsAt) === k).length;
     const dayList = all.filter((e) => dayKey(e.startsAt) === dayKey(selDay)).sort((a, b) => a.startsAt - b.startsAt);
-    const shift = (n) => {
+    const shift = (n: number) => {
       const d = new Date(month);
       d.setMonth(d.getMonth() + n);
       setMonth(d.getTime());
     };
-    return [
-      <AppBar large title={t('nav.events')}>
+    return <>{<AppBar large title={t('nav.events')}>
         <IconButton icon="ticket" label={t('events.tickets')} action="EVT-01.tickets" onClick={() => app.nav.push('EVT-04')} />
         <IconButton
           icon="search"
@@ -145,8 +158,7 @@ S['EVT-01'] = {
             })
           }
         />
-      </AppBar>,
-      <div className="px16 pb16">
+      </AppBar>}{<div className="px16 pb16">
         <Segmented
           options={[
             {
@@ -168,8 +180,7 @@ S['EVT-01'] = {
           }
           action="EVT-01.view"
         />
-      </div>,
-      view === 'list' ? (
+      </div>}{view === 'list' ? (
         <div className="hscroll pb16">
           {[
             ['all', t('common.all')],
@@ -188,10 +199,11 @@ S['EVT-01'] = {
             onClick={() => app.openSheet('SHT-11')}
           />
         </div>
-      ) : null,
-      <Scroll routeKey={route.key} onRefresh={() => setTick(tick + 1)} refreshAction="EVT-01.refresh">
+      ) : null}{<Scroll routeKey={route.key} onRefresh={() => (view === 'list' ? reload() : monthLoad.reload())} refreshAction="EVT-01.refresh">
         {view === 'list' ? (
           <ListState
+            status={status !== 'ok' && groups.length ? 'ok' : status}
+            onRetry={reload}
             n={4}
             variant="card"
             emptyProps={{
@@ -208,8 +220,7 @@ S['EVT-01'] = {
             }}
           >
             {groups.length ? (
-              [
-                groups.map(([k, l]) => (
+              <>{groups.map(([k, l]) => (
                   <div key={k}>
                     <div className="group-head">
                       <span className="t-overline">{t('events.group.' + k)}</span>
@@ -217,13 +228,11 @@ S['EVT-01'] = {
                     </div>
                     <div className="col gap12 px16 pb16">
                       {l.map((e) => (
-                        <EventCard key={e.id + tick} ev={e} />
+                        <EventCard key={e.id} ev={e} />
                       ))}
                     </div>
                   </div>
-                )),
-                <ListEnd />,
-              ]
+                ))}{<ListEnd />}</>
             ) : (
               <EmptyState
                 illustration="empty-events"
@@ -275,8 +284,7 @@ S['EVT-01'] = {
             )}
           </div>
         )}
-      </Scroll>,
-    ];
+      </Scroll>}</>;
   },
 };
 
@@ -290,9 +298,16 @@ S['EVT-02'] = {
     const ev = sel().event(params.id);
     const [py, setPy] = useState(0);
     const [more, setMore] = useState(false);
+    const evLoad = useLoader(LD.eventLoader(params.id));
+    const clubLoad = useLoader(ev && !sel().club(ev.clubId) ? LD.clubLoader(ev.clubId) : null);
+    const isMgr = !!ev && (sel().isManager(ev.clubId, u) || sel().isSuper(u));
+    useLoader(ev && isMgr ? LD.participantsLoader(ev.id, ev.clubId) : null);
+    const myR = ev ? sel().myRsvp(ev.id, u) : null;
     useEffect(() => {
-      if (SCANNING) return;
-      if (ev && ev.status === 'cancelled' && !shownCancelled.has(ev.id)) {
+      if (myR && myR.status === 'waitlist') A.loadWaitPosition(myR.eventId).catch(() => {});
+    }, [myR && myR.status, myR && myR.waitlistAt]);
+    useEffect(() => {
+      if (ev && ev.status === 'cancelled' && myR && !shownCancelled.has(ev.id)) {
         shownCancelled.add(ev.id);
         setTimeout(
           () =>
@@ -302,17 +317,24 @@ S['EVT-02'] = {
           300,
         );
       }
-    }, [ev && ev.id]);
-    if (!ev || !sel().club(ev.clubId) || (sel().club(ev.clubId).status === 'suspended' && !sel().isSuper(u))) return <NotFoundInline />;
-    if (!sel().canSeeEvent(ev, u) && ev.visibility === 'members') {
-      /* visible as locked */
+    }, [ev && ev.id, ev && ev.status]);
+    if (!ev || !sel().club(ev.clubId)) {
+      if (evLoad.status === 'error' || clubLoad.status === 'error' || (ev && ev.isDeleted)) return <NotFoundInline />;
+      return (
+        <>
+          <AppBar onBack={() => app.nav.back()} backAction="EVT-02.back" title="" />
+          <SkeletonList n={4} variant="card" />
+        </>
+      );
     }
-    const club = sel().club(ev.clubId);
+    const club = sel().club(ev.clubId)!;
+    if ((club.status === 'suspended' && !sel().isSuper(u)) || ev.isDeleted || (ev.status === 'draft' && !sel().canManage(ev.clubId, u))) return <NotFoundInline />;
     const st = eventStatusFor(ev, u);
-    const r = sel().myRsvp(ev.id, u);
-    const reg = sel().registered(ev.id);
-    const wl = sel().waitlist(ev.id);
-    const manager = sel().isManager(ev.clubId, u) || sel().isSuper(u);
+    const r = myR;
+    const regN = sel().registeredCount(ev);
+    const wlN = ev.waitlistCount || 0;
+    const regList = isMgr ? sel().registered(ev.id) : [];
+    const manager = isMgr;
     const advisor = sel().isAdvisor(ev.clubId, u);
     const inside = sel().canSeeInside(ev.clubId, u);
     const past = ev.endsAt < Date.now();
@@ -496,10 +518,9 @@ S['EVT-02'] = {
         </StickyCTA>
       );
     };
-    return [
-      <div
+    return <>{<div
         className="screen-scroll no-safe"
-        onScroll={(e) => setPy(Math.min(220, e.target.scrollTop))}
+        onScroll={(e) => setPy(Math.min(220, (e.currentTarget as HTMLElement).scrollTop))}
         style={{
           paddingTop: '0',
           marginTop: 'calc(-1 * var(--safe-top))',
@@ -516,6 +537,7 @@ S['EVT-02'] = {
             icon={club.iconName}
             palette={ev.coverPalette}
             pattern={ev.coverPattern}
+            path={ev.coverPath}
             style={{
               height: '100%',
             }}
@@ -603,16 +625,16 @@ S['EVT-02'] = {
                   action="EVT-02.directions"
                   onClick={() =>
                     app.openDialog('DLG-32', {
-                      url: 'https://maps.example/?q=' + encodeURIComponent(placeName(ev)),
+                      url: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(placeName(ev) + ', Gümüşhane Üniversitesi'),
                     })
                   }
                 />
               }
             />
             <div className="px16 pb16">
-              <div className="map-ph">
-                {'map placeholder \xB7 '}
-                {placeName(ev)}
+              <div className="map-ph row gap8" style={{ justifyContent: 'center' }}>
+                <Icon name="map-pin" size={18} />
+                <span className="ellipsis">{placeName(ev)} · {t('event.placeCampus')}</span>
               </div>
             </div>
           </Card>
@@ -622,25 +644,25 @@ S['EVT-02'] = {
                 <Icon name="users" size={18} />
                 {t('event.capacity')}
               </span>
-              <span className="t-caption tnum">{ev.capacity != null ? `${reg.length}/${ev.capacity}` : t('event.unlimited')}</span>
+              <span className="t-caption tnum">{ev.capacity != null ? `${regN}/${ev.capacity}` : t('event.unlimited')}</span>
             </div>
             {ev.capacity != null ? (
               <>
                 <Progress
-                  value={reg.length}
+                  value={regN}
                   max={ev.capacity}
-                  kind={reg.length >= ev.capacity ? 'muted' : reg.length / ev.capacity > 0.85 ? 'warning' : undefined}
+                  kind={regN >= ev.capacity ? 'muted' : regN / ev.capacity > 0.85 ? 'warning' : undefined}
                   label={t('event.capacity')}
                 />
                 <span className="t-body-s c-sec">
-                  {reg.length >= ev.capacity
+                  {regN >= ev.capacity
                     ? t('event.full')
                     : t('event.remaining', {
-                        count: ev.capacity - reg.length,
+                        count: ev.capacity - regN,
                       })}
-                  {wl.length
+                  {wlN
                     ? ` · ${t('event.waitlistCount', {
-                        count: wl.length,
+                        count: wlN,
                       })}`
                     : ''}
                 </span>
@@ -682,7 +704,7 @@ S['EVT-02'] = {
           <div className="col gap6">
             <h2 className="t-title-s">{t('event.about')}</h2>
             <p className={cx('t-body-m c-sec', !more && 'clamp3')}>{ev.desc}</p>
-            {!more && ev.desc.length > 160 ? (
+            {!more && (ev.desc || '').length > 160 ? (
               <button
                 type="button"
                 className="t-label-l c-brand"
@@ -696,7 +718,7 @@ S['EVT-02'] = {
               </button>
             ) : null}
           </div>
-          {inside && reg.length ? (
+          {inside && regN ? (
             <button
               type="button"
               className="row gap10"
@@ -711,22 +733,28 @@ S['EVT-02'] = {
                       eventId: ev.id,
                     })
                   : app.toast('TST-X8', {
-                      count: reg.length,
+                      count: regN,
                     })
               }
               aria-label={t('event.attendees')}
             >
-              <AvatarGroup
-                users={reg
-                  .slice(0, 5)
-                  .map((x) => sel().user(x.userId))
-                  .filter(Boolean)}
-                size={32}
-                total={reg.length}
-              />
+              {regList.length ? (
+                <AvatarGroup
+                  users={regList
+                    .slice(0, 5)
+                    .map((x) => sel().user(x.userId))
+                    .filter(Boolean)}
+                  size={32}
+                  total={regN}
+                />
+              ) : (
+                <span className="notif-icon ni-brand">
+                  <Icon name="users" size={18} />
+                </span>
+              )}
               <span className="t-body-s c-sec">
                 {t('event.attendeesGoing', {
-                  count: reg.length,
+                  count: regN,
                 })}
               </span>
             </button>
@@ -741,14 +769,13 @@ S['EVT-02'] = {
                 app.openSheet('SHT-10', {
                   targetType: 'event',
                   targetId: ev.id,
+                  clubId: ev.clubId,
                 })
               }
             />
           ) : null}
         </div>
-      </div>,
-      cta(),
-    ];
+      </div>}{cta()}</>;
   },
 };
 
@@ -761,9 +788,25 @@ S['EVT-03'] = {
     const ev = sel().event(params.id);
     const r = sel().myRsvp(params.id, u);
     const me = app.me();
-    if (!ev || !r) return <NotFoundInline />;
+    const evLoad = useLoader(LD.eventLoader(params.id));
+    const clubLoad = useLoader(ev && !sel().club(ev.clubId) ? LD.clubLoader(ev.clubId) : null);
+    useEffect(() => {
+      // bilet canlı: görevli okuttuğunda "kullanıldı" olarak güncellenir
+      if (!u) return;
+      return R.watchMyRsvp(params.id, u, (x) => session.setRsvp(params.id, x));
+    }, [params.id, u]);
+    if (!ev || !sel().club(ev.clubId) || !me) {
+      if (evLoad.status === 'error' || clubLoad.status === 'error') return <NotFoundInline />;
+      return (
+        <>
+          <AppBar onBack={() => app.nav.back()} backAction="EVT-03.back" title={t('ticket.title')} />
+          <SkeletonList n={3} variant="card" />
+        </>
+      );
+    }
+    if (!r || r.status === 'waitlist' || r.status === 'cancelled') return <NotFoundInline />;
     const status = ev.status === 'cancelled' ? 'void' : r.status === 'attended' ? 'used' : 'valid';
-    const club = sel().club(ev.clubId);
+    const club = sel().club(ev.clubId)!;
     return (
       <>
         <AppBar onBack={() => app.nav.back()} backAction="EVT-03.back" title={t('ticket.title')}>
@@ -786,7 +829,7 @@ S['EVT-03'] = {
                 justifyContent: 'center',
               }}
             >
-              <Badge kind="info" icon="sun" label={t('ticket.brightness')} />
+              <Badge kind="info" icon="sun" label={t('web.ticket.brightness')} />
             </div>
             <div className="ticket">
               <div className="card-body col gap8">
@@ -816,7 +859,7 @@ S['EVT-03'] = {
                 <div
                   className={cx('qr', status === 'used' && 'is-blur', status === 'void' && 'is-void')}
                   dangerouslySetInnerHTML={{
-                    __html: qrSVG(r.ticketCode, 220),
+                    __html: qrSVG(ticketQrPayload(ev.id, r.ticketCode), 220),
                   }}
                 />
                 {status === 'used' ? (
@@ -838,21 +881,6 @@ S['EVT-03'] = {
                 <span className="t-body-m c-heading">{me.name}</span>
               </div>
             </div>
-            {status === 'valid' ? (
-              <Button
-                variant="outline"
-                icon="scan-line"
-                label={t('ticket.demoScan')}
-                action="EVT-03.demoScan"
-                onClick={() => {
-                  app.dispatch('rsvp.scan', {
-                    eventId: ev.id,
-                    userId: u,
-                  });
-                  app.toast('TST-15');
-                }}
-              />
-            ) : null}
             <Button
               variant="text"
               label={t('ticket.openEvent')}
@@ -891,7 +919,12 @@ S['EVT-04'] = {
   comp: function MyEvents({ params }: any) {
     const u = app.uid();
     const [tab, setTab] = useState(params.tab || 'upcoming');
-    const all = sel().userRsvps(u);
+    const { status, reload } = useLoader(LD.myEventsLoader());
+    const all = sel().userRsvps(u).filter((r) => r.status !== 'cancelled' && !r.event.isDeleted);
+    useEffect(() => {
+      if (tab === 'waitlist') all.filter((r) => r.status === 'waitlist').forEach((r) => A.loadWaitPosition(r.eventId).catch(() => {}));
+      // eslint-disable-next-line
+    }, [tab, all.length]);
     const list = all
       .filter((r) =>
         tab === 'upcoming'
@@ -925,8 +958,10 @@ S['EVT-04'] = {
             action="EVT-04.tab"
           />
         </div>
-        <Scroll routeKey="myevents">
+        <Scroll routeKey="myevents" onRefresh={reload} refreshAction="EVT-04.refresh">
           <ListState
+            status={status !== 'ok' && list.length ? 'ok' : status}
+            onRetry={reload}
             n={4}
             emptyProps={{
               illustration: 'empty-events',
@@ -946,7 +981,7 @@ S['EVT-04'] = {
                       key={ev.id}
                       leading={<DateBadge ts={ev.startsAt} />}
                       title={ev.title}
-                      subtitle={`${sel().club(ev.clubId).name} · ${app.fmt.time(ev.startsAt)}`}
+                      subtitle={`${(sel().club(ev.clubId) || ({} as any)).name || ''} · ${app.fmt.dateShort(ev.startsAt)} ${app.fmt.time(ev.startsAt)}`}
                       sub2={st ? <StatusBadge status={st} /> : null}
                       action={'EVT-04.event.' + ev.id}
                       onClick={() =>
@@ -1033,33 +1068,36 @@ S['NTF-01'] = {
     const all = sel().notifsFor(u);
     const perm = notifPermission();
     const dismissed = app.state.ui.dismissedNotifBanner;
-    const [tick, setTick] = useState(0);
-    const list = all.filter((n) => filter === 'all' || (filter === 'unread' && !n.read) || NOTIF_CAT[n.type] === filter);
+    useEffect(() => {
+      LD.loadNotifRefs(all).catch(() => {});
+      // eslint-disable-next-line
+    }, [all.length, all[0] && all[0].id]);
+    const list = all.filter((n) => filter === 'all' || (filter === 'unread' && !n.read) || (NOTIF_CAT as any)[n.type] === filter);
     const t0 = today0();
-    const groups = [
-      ['today', (n) => n.createdAt >= t0],
-      ['yesterday', (n) => n.createdAt >= t0 - DAY && n.createdAt < t0],
-      ['week', (n) => n.createdAt >= t0 - 7 * DAY && n.createdAt < t0 - DAY],
-      ['older', (n) => n.createdAt < t0 - 7 * DAY],
-    ]
-      .map(([k, fn]) => [k, list.filter(fn)])
+    const groups = (
+      [
+        ['today', (n: any) => n.createdAt >= t0],
+        ['yesterday', (n: any) => n.createdAt >= t0 - DAY && n.createdAt < t0],
+        ['week', (n: any) => n.createdAt >= t0 - 7 * DAY && n.createdAt < t0 - DAY],
+        ['older', (n: any) => n.createdAt < t0 - 7 * DAY],
+      ] as Array<[string, (n: any) => boolean]>
+    )
+      .map(([k, fn]) => [k, list.filter(fn)] as const)
       .filter(([, l]) => l.length);
-    return [
-      <AppBar large title={t('nav.notifications')}>
+    return <>{<AppBar large title={t('nav.notifications')}>
         <IconButton
           icon="check-check"
           label={t('notif.markAllRead')}
           action="NTF-01.markAllRead"
           onClick={() => {
-            app.dispatch('notif.readAll', {
-              userId: u,
-            });
-            app.toast('TST-18');
+            if (!all.some((n) => !n.read)) return app.toast('TST-18');
+            A.markAllRead()
+              .then(() => app.toast('TST-18'))
+              .catch(handleError);
           }}
         />
         <IconButton icon="settings" label={t('notif.settings')} action="NTF-01.settings" onClick={() => app.nav.push('NTF-02')} />
-      </AppBar>,
-      perm !== 'granted' && !dismissed ? (
+      </AppBar>}{perm !== 'granted' && perm !== 'unsupported' && !dismissed ? (
         <Banner
           kind="warning"
           icon="bell-off"
@@ -1074,8 +1112,7 @@ S['NTF-01'] = {
           }
           dismissAction="NTF-01.dismissBanner"
         />
-      ) : null,
-      <div className="hscroll py8">
+      ) : null}{<div className="hscroll py8">
         {[
           ['all', t('common.all')],
           ['unread', t('notif.unread')],
@@ -1085,9 +1122,9 @@ S['NTF-01'] = {
         ].map(([id, l]) => (
           <Chip key={id} label={l} selected={filter === id} action={'NTF-01.filter.' + id} onClick={() => setFilter(id)} />
         ))}
-      </div>,
-      <Scroll routeKey={route.key} onRefresh={() => setTick(tick + 1)} refreshAction="NTF-01.refresh">
+      </div>}{<Scroll routeKey={route.key} onRefresh={() => new Promise((r) => setTimeout(r, 400))} refreshAction="NTF-01.refresh">
         <ListState
+          status={session.s.inboxLoaded ? 'ok' : 'loading'}
           n={6}
           emptyProps={{
             illustration: 'empty-notifications',
@@ -1096,8 +1133,7 @@ S['NTF-01'] = {
           }}
         >
           {groups.length ? (
-            [
-              groups.map(([k, l]) => (
+            <>{groups.map(([k, l]) => (
                 <div key={k}>
                   <div className="group-head">
                     <span className="t-overline">{t('time.group.' + k)}</span>
@@ -1106,15 +1142,12 @@ S['NTF-01'] = {
                     <NotificationRow key={n.id} n={n} />
                   ))}
                 </div>
-              )),
-              <ListEnd />,
-            ]
+              ))}{<ListEnd />}</>
           ) : (
             <EmptyState illustration="empty-notifications" title={t('notif.empty.title')} desc={t('notif.empty.desc')} />
           )}
         </ListState>
-      </Scroll>,
-    ];
+      </Scroll>}</>;
   },
 };
 
@@ -1129,19 +1162,17 @@ S['NTF-02'] = {
     const isManager = sel()
       .managedClubs(u)
       .some((m) => !m.readOnly);
-    const set = (patch) => {
-      app.dispatch('settings.update', {
-        userId: u,
-        patch,
-      });
-      app.toast('TST-19');
+    const set = (patch: any) => {
+      A.updateSettings(patch)
+        .then(() => app.toast('TST-19'))
+        .catch(handleError);
     };
-    const rows = [
+    const rows: Array<[string, string]> = [
       ['announcements', 'megaphone'],
       ['eventReminders', 'bell-ring'],
       ['newEvents', 'calendar-plus'],
       ['applicationResults', 'user-check'],
-      ...(isManager ? [['management', 'shield-check']] : []),
+      ...(isManager ? ([['management', 'shield-check']] as Array<[string, string]>) : []),
       ['system', 'info'],
     ];
     return (
@@ -1155,16 +1186,17 @@ S['NTF-02'] = {
               </span>
               <div className="flex1 col">
                 <span className="t-label-l c-heading">{t('notifPrefs.permission')}</span>
-                <span className="t-caption">{perm === 'granted' ? t('common.on') : t('common.off')}</span>
+                <span className="t-caption">{perm === 'granted' ? t('common.on') : perm === 'unsupported' ? t('web.notif.unsupported') : t('common.off')}</span>
               </div>
-              {perm !== 'granted' ? (
+              {perm !== 'granted' && perm !== 'unsupported' ? (
                 <Button size="sm" variant="tonal" label={t('notifPrefs.enable')} action="NTF-02.permission" onClick={() => app.openDialog('DLG-03')} />
               ) : null}
             </Card>
             <Card>
-              {rows.map(([k, icon], i) => [
-                i ? <div className="divider" /> : null,
-                <div key={k} className="tile is-plain in-card">
+              {rows.map(([k, icon], i) => (
+                <Fragment key={k}>
+                {i ? <div className="divider" /> : null}
+                <div className="tile is-plain in-card">
                   <Icon name={icon} size={20} class="c-muted" />
                   <span className="tile-text t-body-m c-heading">{t('notifPrefs.' + k)}</span>
                   <Switch
@@ -1177,8 +1209,9 @@ S['NTF-02'] = {
                     action={'NTF-02.toggle.' + k}
                     label={t('notifPrefs.' + k)}
                   />
-                </div>,
-              ])}
+                </div>
+                </Fragment>
+              ))}
             </Card>
             <div className="col gap8">
               <span className="field-label">{t('notifPrefs.reminderTime')}</span>
@@ -1240,7 +1273,7 @@ S['NTF-02'] = {
                         onClick={() =>
                           app.openSheet('SHT-29', {
                             value: st.quietFrom,
-                            onSelect: (v) =>
+                            onSelect: (v: string) =>
                               set({
                                 quietFrom: v,
                               }),
@@ -1257,7 +1290,7 @@ S['NTF-02'] = {
                         onClick={() =>
                           app.openSheet('SHT-29', {
                             value: st.quietTo,
-                            onSelect: (v) =>
+                            onSelect: (v: string) =>
                               set({
                                 quietTo: v,
                               }),
@@ -1276,16 +1309,12 @@ S['NTF-02'] = {
                   .myClubs(u)
                   .map((m, i) => {
                     const cs = sel().clubSettings(u, m.clubId);
-                    return [
-                      i ? <div className="divider" /> : null,
+                    return (
+                      <Fragment key={m.clubId}>
+                      {i ? <div className="divider" /> : null}
                       <Tile
-                        key={m.clubId}
                         inCard
-                        leading={
-                          <span className="emblem is-xs">
-                            <Icon name={m.club.iconName} size={16} />
-                          </span>
-                        }
+                        leading={<ClubEmblem club={m.club} cls="is-xs" size={16} />}
                         title={m.club.name}
                         subtitle={cs.muted ? t('notifPrefs.muted') : t('notifPrefs.customize')}
                         chevron
@@ -1295,8 +1324,9 @@ S['NTF-02'] = {
                             clubId: m.clubId,
                           })
                         }
-                      />,
-                    ];
+                      />
+                      </Fragment>
+                    );
                   })}
                 {!sel().myClubs(u).length ? <p className="t-body-s c-muted p16">{t('notifPrefs.noClubs')}</p> : null}
               </Card>

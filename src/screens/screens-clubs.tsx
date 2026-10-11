@@ -1114,7 +1114,7 @@ S['CLB-03'] = {
     );
   },
 };
-function NotFoundInline() {
+export function NotFoundInline() {
   const C = SCREENS['SYS-04'].comp;
   return <C params={{}} />;
 }

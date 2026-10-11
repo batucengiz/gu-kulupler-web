@@ -540,6 +540,27 @@ function Tile({ leading, title, subtitle, trailing, onClick, action, danger, dis
     ) : null,
   ];
   if (!onClick) return <div className={cx('tile is-plain', inCard && 'in-card', danger && 'is-danger', cls)}>{Children.toArray(inner)}</div>;
+  // Sağ tarafta etkileşimli öğe varsa iç içe <button> geçersiz HTML olur: rol=button taşıyan div kullan.
+  if (trailing != null)
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        className={cx('tile', inCard && 'in-card', plain && 'is-plain', danger && 'is-danger', cls)}
+        style={{ cursor: 'pointer' }}
+        aria-disabled={disabled ? 'true' : undefined}
+        data-action={act(action)}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+            e.preventDefault();
+            onClick(e);
+          }
+        }}
+      >
+        {Children.toArray(inner)}
+      </div>
+    );
   return (
     <button
       type="button"

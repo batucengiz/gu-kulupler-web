@@ -17,6 +17,7 @@ import { Banner } from '../ui/ui';
 import { Logo, Avatar } from '../ui/art';
 import { notifTitle, notifBody } from '../ui/cards';
 import { openNotification } from '../app/flows';
+import { loadNotifRefs } from '../app/loaders';
 
 const STORES: Array<{ subscribe: (fn: () => void) => () => void }> = [nav, ui, uiState, forms, db, session, prefs, systemTheme, network, userCache];
 
@@ -195,7 +196,7 @@ function boot() {
     prev = new Set(ids);
     if (fresh.length && document.visibilityState === 'visible' && nav.mode === 'app' && !(nav.activeTab === 'notifications' && nav.depth() === 1)) {
       const n = fresh[0];
-      ui.showToast('TST-55', { title: notifTitle(n), action: () => openNotification(n) });
+      void loadNotifRefs([n]).finally(() => ui.showToast('TST-55', { title: notifTitle(n), action: () => openNotification(n) }));
     }
   });
   // çevrimiçi olunca TST-25

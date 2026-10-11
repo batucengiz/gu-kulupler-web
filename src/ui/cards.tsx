@@ -466,10 +466,9 @@ function EventCard({ ev, screen = 'EVT-01', compact, showClub = true, highlight 
           ) : null}
           <span className="t-body-s c-sec row gap4">
             <Icon name="clock" size={14} />
-            {app.fmt.time(ev.startsAt)}
-            {' \xB7 '}
+            <span className="nowrap tnum">{app.fmt.time(ev.startsAt)}{' \xB7 '}</span>
             <Icon name="map-pin" size={14} />
-            <span className="ellipsis">{placeName(ev)}</span>
+            <span className="ellipsis" style={{ minWidth: 0 }}>{placeName(ev)}</span>
           </span>
           {ev.capacity != null ? (
             <div className="row gap8">

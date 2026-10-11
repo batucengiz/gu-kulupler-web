@@ -1,7 +1,7 @@
 /* AuthRepository — e-posta alan adı denetimi, giriş kısıtlayıcı (5 hata → 30 sn), doğrulama e-postası bekleme süresi (60 sn). */
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as fbSignOut, sendEmailVerification, sendPasswordResetEmail,
-  updateProfile as fbUpdateProfile, verifyBeforeUpdateEmail, reload, type User as FbUser,
+  updateProfile as fbUpdateProfile, verifyBeforeUpdateEmail, reload, reauthenticateWithCredential, updatePassword, EmailAuthProvider, type User as FbUser,
 } from 'firebase/auth';
 import { auth } from '../../lib/firebase';
 import { AppError, errCode } from '../fs';
@@ -98,6 +98,28 @@ export async function resetPassword(email: string) {
     // kullanıcı yoksa da başarı gibi davranılır (hesap varlığı sızdırılmaz)
     if (c === 'user-not-found' || c === 'invalid-email') return;
     if (c === 'too-many-requests') throw new AppError('tooManyRequests');
+    throw err;
+  }
+}
+/** Şifre değiştir: mevcut şifreyle yeniden kimlik doğrulama + güncelleme. */
+export async function changePassword(current: string, next: string) {
+  const u = auth.currentUser;
+  if (!u || !u.email) throw new AppError('unauthenticated');
+  try {
+    await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, current));
+  } catch (err) {
+    const c = errCode(err);
+    if (['invalid-credential', 'wrong-password', 'invalid-login-credentials'].includes(c)) throw new AppError('wrongCredentials');
+    if (c === 'too-many-requests') throw new AppError('tooManyRequests');
+    if (c === 'network-request-failed') throw new AppError('network');
+    throw err;
+  }
+  try {
+    await updatePassword(u, next);
+  } catch (err) {
+    const c = errCode(err);
+    if (c === 'weak-password') throw new AppError('weakPassword');
+    if (c === 'network-request-failed') throw new AppError('network');
     throw err;
   }
 }

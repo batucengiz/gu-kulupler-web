@@ -7,14 +7,12 @@ import {
   Calendar,
   Card,
   Chip,
-  DEMO_PASSWORD,
   DEPARTMENTS,
   EVENT_TYPES,
   FACULTIES,
   Icon,
   IconButton,
   Input,
-  MENUS,
   OptionRow,
   PALETTES,
   PATTERNS,
@@ -23,7 +21,6 @@ import {
   PopMenu,
   PostCard,
   RoleBadge,
-  SHEETS,
   Segmented,
   SheetFrame,
   StatusBadge,
@@ -33,31 +30,59 @@ import {
   YEARS,
   app,
   catName,
-  clubFilters,
   copyText,
   coverArtSVG,
   cx,
   deptYear,
   downloadText,
-  eventFilters,
   pad2,
   placeName,
   slug,
   today0,
-  ui,
   useBusy,
   useEffect,
   useFocusTrap,
   useRef,
   useState,
   userName,
+  ClubEmblem,
+  useStorageUrl,
+  SkeletonList,
+  trLower,
+  handleError,
+  db,
+  LIMITS,
+  A,
+  LD,
+  useLoader,
+  session,
+  notifPermission,
+  setPrefs,
+  prefs,
+  SHEETS as REG_SHEETS,
+  MENUS as REG_MENUS,
 } from '../ui/kit';
+import { ui, routePath } from '../app/core';
+import { usePostLive } from '../app/loaders';
+import * as M from '../data/repo/memberships';
+import * as U from '../data/repo/users';
+import * as RP from '../data/repo/reports';
+import * as P from '../data/repo/posts';
+import * as CM from '../data/repo/comments';
+import * as E from '../data/repo/events';
+import { getClub } from '../data/repo/clubs';
+import * as AU from '../data/repo/auth';
+import { errCode } from '../data/fs';
+import { clubFilters } from './screens-clubs';
+import { eventFilters } from './screens-events';
 /* ===== SHEETS ===== 34 bottom sheets (+ small popup menus). Registry: SHEETS[id] = { title, comp, sample } */
 const t = (k: string, p?: any) => app.t(k, p);
 const sel = () => app.sel;
-const SHEETS = SHEETS;
-const MENUS = MENUS;
-const Row = ({ icon, label, onClick, action, danger, disabled, sub, trailing }) => (
+const SHEETS: Record<string, any> = REG_SHEETS;
+const MENUS: Record<string, any> = REG_MENUS;
+/** Paylaşılabilir mutlak adres (web sürümünün gerçek yolu). */
+export const shareUrl = (screen: string, params: any) => location.origin + routePath({ screen, params });
+const Row = ({ icon, label, onClick, action, danger, disabled, sub, trailing }: any) => (
   <Tile
     leading={<Icon name={icon} size={22} class={danger ? 'c-danger' : 'c-heading'} />}
     title={label}
@@ -69,8 +94,7 @@ const Row = ({ icon, label, onClick, action, danger, disabled, sub, trailing }) 
     trailing={trailing}
   />
 );
-const DEMO_IMAGES = ['demo-img-1', 'demo-img-2', 'demo-img-3', 'demo-img-4', 'demo-img-5', 'demo-img-6', 'demo-img-7', 'demo-img-8'];
-const setLocale = (loc) => {
+const setLocale = (loc: string) => {
   app.dispatch('session.set', {
     locale: loc,
   });
@@ -123,8 +147,9 @@ MENUS['SHT-01'] = ({ close }) => (
     ))}
   </PopMenu>
 );
-MENUS['EVT-MENU'] = ({ props, close }) => {
+MENUS['EVT-MENU'] = ({ props, close }: any) => {
   const ev = sel().event(props.eventId);
+  if (!ev) return null;
   const r = ev && sel().myRsvp(ev.id, app.uid());
   return (
     <PopMenu id="EVT-02" onClose={close}>
@@ -197,7 +222,7 @@ SHEETS['SHT-02'] = {
           .includes(q.toLocaleLowerCase('tr')),
     );
     const selectedFirst = list.slice().sort((a, b) => (a.id === props.value ? -1 : b.id === props.value ? 1 : 0));
-    const groups = FACULTIES.map((f) => [f, selectedFirst.filter((d) => d.faculty === f)]).filter(([, l]) => l.length);
+    const groups = FACULTIES.map((f) => [f, selectedFirst.filter((d) => d.faculty === f)] as const).filter(([, l]) => l.length);
     return (
       <SheetFrame id="SHT-02" title={t('sht.02.title')} onClose={close} full flush>
         <div className="px16 pb16">
@@ -404,13 +429,13 @@ SHEETS['SHT-05'] = {
     clubId: 'c03',
   }),
   comp: ({ props, close }) => {
-    const club = sel().club(props.clubId);
+    const club = sel().club(props.clubId)!;
     const u = app.uid();
     const m = sel().membership(club.id, u);
-    const [note, setNote] = useState('');
+    const [note, setNote] = useState(m && m.status === 'rejected' ? '' : (m && m.note) || '');
     const [err, setErr] = useState('');
     const [busy, run] = useBusy();
-    const wait = m && m.retryAfter && m.retryAfter > Date.now();
+    const wait = !!(m && m.retryAfter && m.retryAfter > Date.now());
     const submit = () =>
       run(async () => {
         if (club.requireNote && !note.trim()) {
@@ -418,16 +443,13 @@ SHEETS['SHT-05'] = {
           return;
         }
         if (!app.requireOnline()) return;
-        await app.api();
-        app.dispatch('membership.apply', {
-          clubId: club.id,
-          userId: u,
-          note: note.trim(),
-        });
-        app.ui.closeAllSheets();
-        app.nav.push('CLB-04', {
-          id: club.id,
-        });
+        const r = await A.joinClub(club.id, note.trim());
+        ui.closeAllSheets();
+        if (r === 'joined') app.toast('TST-34', { action: () => app.nav.push('CLB-03', { id: club.id }) });
+        else
+          app.nav.push('CLB-04', {
+            id: club.id,
+          });
       });
     return (
       <SheetFrame
@@ -438,14 +460,14 @@ SHEETS['SHT-05'] = {
         footer={
           <Button
             size="lg"
-            label={wait ? app.fmt.countdown(m.retryAfter) : t('sht.05.submit')}
+            label={wait ? app.fmt.countdown(m!.retryAfter!) : t('sht.05.submit')}
             loading={busy}
             disabled={wait}
             action="SHT-05.submit"
             onClick={submit}
             onDisabledClick={() =>
               app.toast('TST-X4', {
-                date: app.fmt.date(m.retryAfter),
+                date: app.fmt.date(m!.retryAfter!),
               })
             }
           />
@@ -493,7 +515,7 @@ SHEETS['SHT-05'] = {
                 className="c-brand"
                 data-action="SHT-05.legal"
                 onClick={() => {
-                  app.ui.closeAllSheets();
+                  ui.closeAllSheets();
                   app.nav.push('AUT-06', {
                     tab: 'kvkk',
                   });
@@ -515,11 +537,11 @@ SHEETS['SHT-06'] = {
     clubId: 'c01',
   }),
   comp: ({ props, close }) => {
-    const club = sel().club(props.clubId);
+    const club = sel().club(props.clubId)!;
     const u = app.uid();
     const mode = sel().mode(club.id, u);
     const member = ['member', 'manager', 'advisor'].includes(mode);
-    const go = (fn) => () => {
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -608,15 +630,12 @@ SHEETS['SHT-07'] = {
   }),
   comp: ({ props, close }) => {
     const u = app.uid();
-    const club = sel().club(props.clubId);
-    const cs = sel().clubSettings(u, club.id);
-    const set = (patch) => {
-      app.dispatch('settings.club', {
-        userId: u,
-        clubId: club.id,
-        patch,
-      });
-      app.toast('TST-38');
+    const club = sel().club(props.clubId)!;
+    const cs: any = sel().clubSettings(u, club.id);
+    const set = (patch: any) => {
+      A.updateClubPrefs(club.id, patch)
+        .then(() => app.toast('TST-38'))
+        .catch(handleError);
     };
     return (
       <SheetFrame id="SHT-07" title={t('sht.07.title')} onClose={close}>
@@ -701,7 +720,7 @@ SHEETS['SHT-08'] = {
     const own = post.authorId === u;
     const manager = sel().isManager(post.clubId, u) || sel().isSuper(u);
     const saved = sel().isSaved(u, post.id);
-    const go = (fn) => () => {
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -712,15 +731,15 @@ SHEETS['SHT-08'] = {
           label={saved ? t('feed.unsave') : t('feed.save')}
           action="SHT-08.save"
           onClick={go(() => {
-            const snap = app.store.get();
-            const now = app.dispatch('post.save', {
-              postId: post.id,
-              userId: u,
-            });
-            app.toast('TST-11', {
-              saved: now,
-              undo: () => app.store.restore(snap),
-            });
+            if (!app.requireOnline()) return;
+            A.toggleSave(post)
+              .then((now) =>
+                app.toast('TST-11', {
+                  saved: now,
+                  undo: () => A.toggleSave(sel().post(post.id) || post).catch(handleError),
+                }),
+              )
+              .catch(handleError);
           })}
         />
         <Row
@@ -739,7 +758,7 @@ SHEETS['SHT-08'] = {
           label={t('sht.08.copyLink')}
           action="SHT-08.copyLink"
           onClick={go(() => {
-            copyText(`https://kulupler.gumushane.edu.tr/clubs/${post.clubId}/posts/${post.id}`);
+            copyText(shareUrl('FED-02', { clubId: post.clubId, postId: post.id }));
             app.toast('TST-35');
           })}
         />
@@ -753,6 +772,7 @@ SHEETS['SHT-08'] = {
                 app.openSheet('SHT-10', {
                   targetType: 'post',
                   targetId: post.id,
+                  clubId: post.clubId,
                 }),
               )}
             />
@@ -789,13 +809,13 @@ SHEETS['SHT-08'] = {
               action="SHT-08.pin"
               onClick={go(() => {
                 if (!app.guard(post.clubId)) return;
-                app.dispatch('post.pin', {
-                  postId: post.id,
-                  pinned: !post.pinned,
-                });
-                app.toast('TST-53', {
-                  pinned: !post.pinned,
-                });
+                A.setPinned(post, !post.pinned)
+                  .then(() =>
+                    app.toast('TST-53', {
+                      pinned: !post.pinned,
+                    }),
+                  )
+                  .catch(handleError);
               })}
             />
             <Row
@@ -828,18 +848,14 @@ SHEETS['SHT-09'] = {
     const post = sel().post(props.postId);
     const [text, setText] = useState('');
     const [busy, run] = useBusy();
+    usePostLive(props.postId, props.clubId || (post && post.clubId) || '');
     if (!post) return null;
-    const comments = sel().postComments(post.id, u);
+    const comments = sel().postComments(post.id);
     const advisor = sel().isAdvisor(post.clubId, u);
     const send = () =>
       run(async () => {
-        if (!text.trim() || !app.requireOnline()) return;
-        await app.api();
-        app.dispatch('comment.add', {
-          postId: post.id,
-          authorId: u,
-          text: text.trim(),
-        });
+        if (!text.trim() || !app.guard(post.clubId)) return;
+        await A.addComment(post, text.trim());
         setText('');
         app.toast('TST-12');
       });
@@ -968,24 +984,30 @@ SHEETS['SHT-10'] = {
           return;
         }
         if (!app.requireOnline()) return;
-        await app.api();
         const u = app.uid();
-        app.dispatch('report.create', {
-          targetType: props.targetType,
-          targetId: props.targetId,
-          reason,
-          note: note.trim(),
-          reporterId: u,
-        });
+        const post = props.targetType === 'post' ? sel().post(props.targetId) : props.postId ? sel().post(props.postId) : null;
+        const ev = props.targetType === 'event' ? sel().event(props.targetId) : null;
+        const clubId = props.clubId || (post && post.clubId) || (ev && ev.clubId) || (props.targetType === 'club' ? props.targetId : null);
+        try {
+          await A.report({ type: props.targetType, id: props.targetId, clubId }, reason, note.trim());
+        } catch (e: any) {
+          if (e && e.code === 'alreadyExists') {
+            ui.closeAllSheets();
+            app.toast('TST-X40', { text: t('web.report.already') });
+            return;
+          }
+          throw e;
+        }
+        const comment = props.targetType === 'comment' && props.postId ? (db.comments[props.postId] || []).find((c: any) => c.id === props.targetId) : null;
         const authorId =
           props.targetType === 'post'
-            ? (sel().post(props.targetId) || {}).authorId
+            ? post && post.authorId
             : props.targetType === 'comment'
-              ? (app.state.comments[props.targetId] || {}).authorId
+              ? comment && comment.authorId
               : props.targetType === 'user'
                 ? props.targetId
                 : null;
-        app.ui.closeAllSheets();
+        ui.closeAllSheets();
         app.openDialog('DLG-12', {
           userId: authorId && authorId !== u ? authorId : null,
         });
@@ -1047,7 +1069,7 @@ SHEETS['SHT-11'] = {
     const { efOf, applyEventFilters, DEFAULT_EF } = eventFilters;
     const [f, setF] = useState(efOf());
     const u = app.uid();
-    const upd = (p) =>
+    const upd = (p: any) =>
       setF({
         ...f,
         ...p,
@@ -1117,12 +1139,12 @@ SHEETS['SHT-11'] = {
                     if (id === 'custom')
                       app.openSheet('SHT-28', {
                         value: f.from || Date.now(),
-                        onSelect: (from) =>
+                        onSelect: (from: number) =>
                           app.openSheet('SHT-28', {
                             value: f.to || from,
                             min: from,
                             title: t('sht.11.to'),
-                            onSelect: (to) =>
+                            onSelect: (to: number) =>
                               upd({
                                 date: 'custom',
                                 from,
@@ -1251,25 +1273,20 @@ SHEETS['SHT-12'] = {
   }),
   comp: ({ props, close }) => {
     const u = app.uid();
-    const ev = sel().event(props.eventId);
-    const [rem, setRem] = useState('1h');
+    const ev = sel().event(props.eventId)!;
+    const [rem, setRem] = useState<any>(sel().settings().reminderTime || '1h');
     const [busy, run] = useBusy();
     const conflict = sel()
       .userRsvps(u)
-      .some((r) => r.status !== 'waitlist' && r.event.id !== ev.id && r.event.startsAt < ev.endsAt && r.event.endsAt > ev.startsAt);
+      .some((r) => (r.status === 'going' || r.status === 'attended') && r.event.id !== ev.id && !r.event.isDeleted && r.event.status !== 'cancelled' && r.event.startsAt < ev.endsAt && r.event.endsAt > ev.startsAt);
     const confirm = () =>
       run(async () => {
         if (!app.requireOnline()) return;
-        await app.api();
-        const res = app.dispatch('rsvp.join', {
-          eventId: ev.id,
-          userId: u,
-          reminder: rem,
-        });
+        const res = await A.joinEvent(ev.id, rem);
         close();
         if (res.status === 'waitlist')
           app.toast('TST-43', {
-            n: res.position,
+            n: res.position || 1,
           });
         else
           app.toast('TST-41', {
@@ -1301,7 +1318,7 @@ SHEETS['SHT-12'] = {
           <div className="col gap8">
             <span className="field-label">{t('event.reminder')}</span>
             <div className="row wrap gap8">
-              {['none', '1h', '1d', 'both'].map((r) => (
+              {['none', '15m', '1h', '1d'].map((r) => (
                 <Chip key={r} label={t('reminder.' + r)} selected={rem === r} action={'SHT-12.reminder.' + r} onClick={() => setRem(r)} />
               ))}
             </div>
@@ -1332,16 +1349,16 @@ SHEETS['SHT-13'] = {
             checked={cur === v}
             action={'SHT-13.select.' + v}
             onClick={() => {
-              if (r)
-                app.dispatch('rsvp.setReminder', {
-                  eventId: props.eventId,
-                  userId: u,
-                  reminder: v,
-                });
-              app.toast('TST-37', {
-                off: v === 'none',
-              });
               close();
+              if (!r) return;
+              A.setReminder(props.eventId, v as any)
+                .then(() => {
+                  app.toast('TST-37', {
+                    off: v === 'none',
+                  });
+                  if (v !== 'none' && notifPermission() === 'default') app.openDialog('DLG-03');
+                })
+                .catch(handleError);
             }}
           />
         ))}
@@ -1350,22 +1367,69 @@ SHEETS['SHT-13'] = {
   },
 };
 /* SHT-14 add to calendar */
-function icsFor(ev) {
-  const f = (ts) =>
-    new Date(ts)
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace(/\.\d{3}/, '');
-  return `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//GU Kulupler//TR\r\nBEGIN:VEVENT\r\nUID:${ev.id}@kulupler.gumushane.edu.tr\r\nDTSTAMP:${f(Date.now())}\r\nDTSTART:${f(ev.startsAt)}\r\nDTEND:${f(ev.endsAt)}\r\nSUMMARY:${ev.title}\r\nLOCATION:${placeName(ev)}\r\nDESCRIPTION:${(ev.desc || '').replace(/\n/g, ' ')}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
+const icsDate = (ts: number) =>
+  new Date(ts)
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}/, '');
+/** RFC 5545 metin kaçışı + 75 sekizlik satır katlama. */
+const icsText = (v: string) => String(v || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+const icsFold = (line: string) => {
+  const out: string[] = [];
+  let cur = '';
+  let bytes = 0;
+  for (const ch of line) {
+    const b = new TextEncoder().encode(ch).length;
+    if (bytes + b > 74) {
+      out.push(cur);
+      cur = ' ';
+      bytes = 1;
+    }
+    cur += ch;
+    bytes += b;
+  }
+  out.push(cur);
+  return out.join('\r\n');
+};
+export function icsFor(ev: any) {
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//GU Kulupler//TR',
+    'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    `UID:${ev.id}@gu-kulupler`,
+    `DTSTAMP:${icsDate(Date.now())}`,
+    `DTSTART:${icsDate(ev.startsAt)}`,
+    `DTEND:${icsDate(ev.endsAt)}`,
+    `SUMMARY:${icsText(ev.title)}`,
+    `LOCATION:${icsText(placeName(ev))}`,
+    `DESCRIPTION:${icsText((ev.desc || '') + '\n' + shareUrl('EVT-02', { id: ev.id }))}`,
+    `URL:${shareUrl('EVT-02', { id: ev.id })}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ];
+  return lines.map(icsFold).join('\r\n') + '\r\n';
 }
+export const googleCalUrl = (ev: any) =>
+  'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' +
+  encodeURIComponent(ev.title) +
+  '&dates=' +
+  icsDate(ev.startsAt) +
+  '/' +
+  icsDate(ev.endsAt) +
+  '&location=' +
+  encodeURIComponent(placeName(ev)) +
+  '&details=' +
+  encodeURIComponent(shareUrl('EVT-02', { id: ev.id }));
 SHEETS['SHT-14'] = {
   title: 'sht.14.title',
   sample: () => ({
     eventId: 'e01',
   }),
   comp: ({ props, close }) => {
-    const ev = sel().event(props.eventId);
-    const go = (fn) => () => {
+    const ev = sel().event(props.eventId)!;
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -1387,7 +1451,7 @@ SHEETS['SHT-14'] = {
           action="SHT-14.google"
           onClick={go(() =>
             app.openDialog('DLG-32', {
-              url: 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(ev.title),
+              url: googleCalUrl(ev),
             }),
           )}
         />
@@ -1396,7 +1460,7 @@ SHEETS['SHT-14'] = {
           label={t('sht.08.copyLink')}
           action="SHT-14.copyLink"
           onClick={go(() => {
-            copyText('https://kulupler.gumushane.edu.tr/events/' + ev.id);
+            copyText(shareUrl('EVT-02', { id: ev.id }));
             app.toast('TST-35');
           })}
         />
@@ -1412,11 +1476,16 @@ SHEETS['SHT-15'] = {
     id: 'c01',
   }),
   comp: ({ props, close }) => {
-    const st = app.state;
-    const item = props.type === 'club' ? st.clubs[props.id] : props.type === 'event' ? st.events[props.id] : st.posts[props.id];
+    const item: any = props.type === 'club' ? sel().club(props.id) : props.type === 'event' ? sel().event(props.id) : sel().post(props.id);
     const title = item ? item.name || item.title || item.text : '';
-    const url = `https://kulupler.gumushane.edu.tr/${props.type === 'club' ? 'clubs/' + props.id : props.type === 'event' ? 'events/' + props.id : 'clubs/' + (item ? item.clubId : '') + '/posts/' + props.id}`;
-    const go = (fn) => () => {
+    const url =
+      props.type === 'club'
+        ? shareUrl('CLB-03', { id: props.id })
+        : props.type === 'event'
+          ? shareUrl('EVT-02', { id: props.id })
+          : shareUrl('FED-02', { clubId: item ? item.clubId : '', postId: props.id });
+    const canNative = typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function';
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -1425,7 +1494,7 @@ SHEETS['SHT-15'] = {
         <div className="px16 pb16">
           <Card muted class="card-body col gap4">
             <span className="t-label-l c-heading clamp2">{title}</span>
-            <span className="t-caption ellipsis">{url.replace('https://', '')}</span>
+            <span className="t-caption ellipsis">{url.replace(/^https?:\/\//, '')}</span>
           </Card>
         </div>
         <Row
@@ -1453,150 +1522,75 @@ SHEETS['SHT-15'] = {
           action="SHT-15.email"
           onClick={go(() =>
             app.openDialog('DLG-32', {
-              url: 'mailto:?subject=' + encodeURIComponent(title),
+              url: 'mailto:?subject=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(url),
             }),
           )}
         />
-        <Row
-          icon="more-horizontal"
-          label={t('sht.15.other')}
-          action="SHT-15.other"
-          onClick={go(() =>
-            app.toast('TST-58', {
-              what: t('sht.15.systemShare'),
-            }),
-          )}
-        />
+        {canNative ? (
+          <Row
+            icon="more-horizontal"
+            label={t('sht.15.other')}
+            action="SHT-15.other"
+            onClick={go(() => {
+              (navigator as any).share({ title, url }).catch(() => {});
+            })}
+          />
+        ) : null}
       </SheetFrame>
     );
   },
 };
-/* SHT-16 photo source / image picker */
+/* SHT-16 fotoğraf kaynağı — web: gerçek dosya seçici (kamera = capture girişi; masaüstünde dosya seçer). */
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+/** Gizli <input type=file> ile seçim yaptırır; kullanıcı vazgeçerse hiçbir şey çağrılmaz. */
+export function pickFiles(opts: { multi?: boolean; camera?: boolean; max?: number }, onFiles: (files: File[]) => void) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  if (opts.multi) input.multiple = true;
+  if (opts.camera) input.setAttribute('capture', 'environment');
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  const done = () => setTimeout(() => input.remove(), 0);
+  input.addEventListener('change', () => {
+    const all = Array.from(input.files || []);
+    done();
+    if (!all.length) return;
+    const ok = all.filter((f) => (!f.type || IMAGE_TYPES.includes(f.type) || f.type.startsWith('image/')) && f.size <= MAX_IMAGE_BYTES);
+    if (ok.length < all.length) app.toast('TST-X40', { text: t('web.image.invalid') });
+    const max = opts.max || (opts.multi ? 4 : 1);
+    if (ok.length > max) app.toast('TST-X5');
+    if (ok.length) onFiles(ok.slice(0, max));
+  });
+  input.addEventListener('cancel', done);
+  input.click();
+}
 SHEETS['SHT-16'] = {
   title: 'sht.16.title',
-  sample: () => ({
-    onPick: () => {},
-  }),
-  comp: ({ props, close }) => {
-    const [grid, setGrid] = useState(!!props.multi);
-    const [picked, setPicked] = useState<any[]>([]);
-    const max = props.max || (props.multi ? 4 : 1);
-    const perm = app.state.session;
-    const finish = (seeds) => {
+  comp: ({ props, close }: any) => {
+    const pick = (camera: boolean) => () => {
+      pickFiles({ multi: !!props.multi && !camera, camera, max: props.max }, (files) => {
+        props.onPick && props.onPick(props.multi ? files : files[0]);
+      });
       close();
-      props.onPick && props.onPick(props.multi ? seeds : seeds[0]);
-      app.toast('TST-57');
     };
-    const openGallery = () => {
-      if (perm.galleryPermission !== 'granted')
-        app.openDialog('DLG-05', {
-          onGranted: () => setGrid(true),
-        });
-      else setGrid(true);
-    };
-    const openCamera = () => {
-      if (perm.cameraPermission !== 'granted')
-        app.openDialog('DLG-04', {
-          onGranted: () => finish(['camera-' + Date.now()]),
-        });
-      else finish(['camera-' + Date.now()]);
-    };
-    if (!grid)
-      return (
-        <SheetFrame id="SHT-16" title={t('sht.16.title')} onClose={close} menu flush>
-          <Row icon="camera" label={t('sht.16.camera')} action="SHT-16.camera" onClick={openCamera} />
-          <Row icon="images" label={t('sht.16.gallery')} action="SHT-16.gallery" onClick={openGallery} />
-          {props.hasPhoto ? (
-            <Row
-              icon="trash-2"
-              label={t('sht.16.remove')}
-              danger
-              action="SHT-16.remove"
-              onClick={() => {
-                close();
-                props.onRemove && props.onRemove();
-                app.toast('TST-57');
-              }}
-            />
-          ) : null}
-        </SheetFrame>
-      );
     return (
-      <SheetFrame
-        id="SHT-16"
-        title={t('sht.16.pick')}
-        onClose={close}
-        footer={
-          <Button
-            label={t('sht.16.add', {
-              count: picked.length,
-            })}
-            disabled={!picked.length}
-            action="SHT-16.add"
-            onClick={() => finish(picked)}
-            onDisabledClick={() => {}}
+      <SheetFrame id="SHT-16" title={t('sht.16.title')} onClose={close} menu flush>
+        <Row icon="camera" label={t('sht.16.camera')} action="SHT-16.camera" onClick={pick(true)} />
+        <Row icon="images" label={t('sht.16.gallery')} action="SHT-16.gallery" onClick={pick(false)} />
+        {props.hasPhoto ? (
+          <Row
+            icon="trash-2"
+            label={t('sht.16.remove')}
+            danger
+            action="SHT-16.remove"
+            onClick={() => {
+              close();
+              props.onRemove && props.onRemove();
+            }}
           />
-        }
-      >
-        <div
-          className="grid3 pb16"
-          style={{
-            gap: '8px',
-          }}
-        >
-          {DEMO_IMAGES.map((s, i) => {
-            const k = picked.indexOf(s);
-            return (
-              <button
-                type="button"
-                key={s}
-                className="rel"
-                style={{
-                  aspectRatio: '1',
-                  borderRadius: '12px',
-                  overflow: 'hidden',
-                  outline: k >= 0 ? '3px solid var(--brand-primary)' : 'none',
-                  outlineOffset: '-3px',
-                }}
-                aria-pressed={k >= 0 ? 'true' : 'false'}
-                aria-label={t('a11y.openImage', {
-                  n: i + 1,
-                })}
-                data-action={'SHT-16.image.' + i}
-                onClick={() => {
-                  if (k >= 0) setPicked(picked.filter((x) => x !== s));
-                  else if (picked.length < max) setPicked(props.multi ? [...picked, s] : [s]);
-                  else app.toast('TST-X5');
-                }}
-              >
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: '0',
-                  }}
-                  dangerouslySetInnerHTML={{
-                    __html: coverArtSVG(s, 'image', ['red', 'slate', 'bordeaux'][i % 3], PATTERNS[i % 4], {
-                      w: 200,
-                      h: 200,
-                    }),
-                  }}
-                />
-                {k >= 0 ? (
-                  <span
-                    className="badge-count"
-                    style={{
-                      position: 'absolute',
-                      right: '6px',
-                      top: '6px',
-                    }}
-                  >
-                    {k + 1}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
+        ) : null}
       </SheetFrame>
     );
   },
@@ -1606,8 +1600,8 @@ SHEETS['SHT-17'] = {
   title: 'sht.17.title',
   sample: () => ({}),
   comp: ({ close }) => {
-    const cur = app.state.session.theme || 'system';
-    const Mini = ({ dark }) => (
+    const cur = prefs.get().theme || 'system';
+    const Mini = ({ dark }: any) => (
       <span
         style={{
           display: 'block',
@@ -1659,16 +1653,14 @@ SHEETS['SHT-17'] = {
               aria-pressed={cur === th ? 'true' : 'false'}
               data-action={'SHT-17.select.' + th}
               onClick={() => {
-                app.dispatch('session.set', {
-                  theme: th,
-                });
+                setPrefs({ theme: th as any });
                 close();
               }}
             >
               {th === 'system' ? (
                 <span className="row gap4">
                   <span className="flex1">
-                    <Mini />
+                    <Mini dark={false} />
                   </span>
                   <span className="flex1">
                     <Mini dark />
@@ -1696,11 +1688,7 @@ SHEETS['SHT-18'] = {
         {list.map((m) => (
           <Tile
             key={m.clubId}
-            leading={
-              <span className="emblem is-sm">
-                <Icon name={m.club.iconName} size={20} />
-              </span>
-            }
+            leading={<ClubEmblem club={m.club} cls="is-sm" size={20} />}
             title={m.club.name}
             subtitle={
               <span className="row gap6">
@@ -1727,57 +1715,64 @@ SHEETS['SHT-18'] = {
     );
   },
 };
-/* SHT-19 application detail */
+/** Karar çakışması (başka bir yönetici önce karar verdi): güncel durumu getir, DLG-18 ile bildir. */
+export async function onDecisionConflict(clubId: string, userId: string) {
+  const fresh = await M.getMembership(clubId, userId).catch(() => null);
+  if (fresh) db.putMemberships([fresh]);
+  app.openDialog('DLG-18', {
+    result: fresh && fresh.status === 'active' ? t('status.approved') : fresh && fresh.status === 'pending' ? t('status.pending') : t('status.rejected'),
+  });
+}
+/** Onay/ret: çakışmada DLG-18, diğer hatalarda genel işleyici. */
+export async function decide(clubId: string, userId: string, fn: () => Promise<void>) {
+  try {
+    await fn();
+    return true;
+  } catch (e) {
+    if (errCode(e) === 'conflict') await onDecisionConflict(clubId, userId);
+    else handleError(e);
+    return false;
+  }
+}
+export const applicantUser = (m: any) =>
+  sel().user(m.userId) || { id: m.userId, name: m.applicant ? m.applicant.name : t('common.deletedUser'), department: m.applicant?.department, year: m.applicant?.year, avatarSeed: m.applicant?.avatarSeed || m.userId };
 SHEETS['SHT-19'] = {
   title: 'sht.19.title',
-  sample: () => ({
-    clubId: 'c03',
-    userId: 'u_cem',
-  }),
-  comp: ({ props, close }) => {
+  comp: ({ props, close }: any) => {
     const u = app.uid();
     const m = sel().membership(props.clubId, props.userId);
-    const usr = sel().user(props.userId);
     const club = sel().club(props.clubId);
     const readOnly = sel().isAdvisor(props.clubId, u);
-    if (!m || !usr)
+    const [busy, run] = useBusy();
+    useEffect(() => {
+      // bildirimden açıldıysa başvuru belgesi henüz yüklenmemiş olabilir
+      if (!m) M.getMembership(props.clubId, props.userId).then((x) => x && db.putMemberships([x])).catch(() => {});
+      // eslint-disable-next-line
+    }, []);
+    if (!m || !club)
       return (
         <SheetFrame id="SHT-19" title={t('sht.19.title')} onClose={close}>
           <p className="t-body-s c-muted p16">{t('sht.19.gone')}</p>
         </SheetFrame>
       );
-    const common = sel()
-      .commonClubs(u, usr.id)
-      .filter((c) => c.id !== club.id);
+    const usr: any = applicantUser(m);
+    const common = Object.values(db.memberships)
+      .filter((x) => x.userId === usr.id && x.status === 'active' && x.clubId !== club.id && session.s.memberships[x.clubId]?.status === 'active')
+      .map((x) => sel().club(x.clubId))
+      .filter(Boolean) as any[];
     const decided = m.status !== 'pending';
-    const approve = () => {
-      if (!app.guard(club.id)) return;
-      if (m.stale) {
-        app.openDialog('DLG-18', {
-          result: t('status.rejected'),
-          onOk: () =>
-            app.dispatch('membership.reject', {
-              clubId: club.id,
-              userId: usr.id,
-              actorId: 'u_other',
-              reason: 'quota',
-            }),
-        });
+    const canUndo = decided && m.decidedBy === u && !!m.decidedAt && Date.now() - m.decidedAt < LIMITS.managerUndoWindowMs && !readOnly;
+    const approve = () =>
+      run(async () => {
+        if (!app.guard(club.id)) return;
+        const ok = await decide(club.id, usr.id, () => A.approve(club.id, usr.id));
         close();
-        return;
-      }
-      const snap = app.store.get();
-      app.dispatch('membership.approve', {
-        clubId: club.id,
-        userId: usr.id,
-        actorId: u,
+        if (ok)
+          app.toast('TST-27', {
+            name: usr.name,
+            undo: () => A.undoDecision(club.id, usr.id).catch(handleError),
+          });
       });
-      close();
-      app.toast('TST-27', {
-        name: usr.name,
-        undo: () => app.store.restore(snap),
-      });
-    };
     return (
       <SheetFrame
         id="SHT-19"
@@ -1785,20 +1780,20 @@ SHEETS['SHT-19'] = {
         onClose={close}
         footer={
           decided ? (
-            m.decidedAt && Date.now() - m.decidedAt < 24 * 36e5 && !readOnly ? (
+            canUndo ? (
               <Button
                 variant="outline"
                 label={t('common.undo')}
+                loading={busy}
                 action="SHT-19.undo"
-                onClick={() => {
-                  if (!app.guard(club.id)) return;
-                  app.dispatch('membership.undoDecision', {
-                    clubId: club.id,
-                    userId: usr.id,
-                  });
-                  close();
-                  app.toast('TST-X17');
-                }}
+                onClick={() =>
+                  run(async () => {
+                    if (!app.guard(club.id)) return;
+                    await A.undoDecision(club.id, usr.id);
+                    close();
+                    app.toast('TST-X17');
+                  })
+                }
               />
             ) : null
           ) : (
@@ -1810,19 +1805,6 @@ SHEETS['SHT-19'] = {
                 action="SHT-19.reject"
                 onClick={() => {
                   if (!app.guard(club.id)) return;
-                  if (m.stale) {
-                    close();
-                    app.openDialog('DLG-18', {
-                      result: t('status.approved'),
-                      onOk: () =>
-                        app.dispatch('membership.approve', {
-                          clubId: club.id,
-                          userId: usr.id,
-                          actorId: 'u_other',
-                        }),
-                    });
-                    return;
-                  }
                   app.openSheet('SHT-20', {
                     clubId: club.id,
                     userId: usr.id,
@@ -1833,6 +1815,7 @@ SHEETS['SHT-19'] = {
               <Button
                 label={t('applications.approve')}
                 disabled={readOnly}
+                loading={busy}
                 action="SHT-19.approve"
                 onClick={approve}
                 onDisabledClick={() => app.toast('TST-26')}
@@ -1913,27 +1896,24 @@ SHEETS['SHT-20'] = {
   }),
   comp: ({ props, close }) => {
     const u = app.uid();
-    const usr = sel().user(props.userId);
+    const m = sel().membership(props.clubId, props.userId);
+    const usr: any = m ? applicantUser(m) : sel().user(props.userId) || { name: '' };
     const [reason, setReason] = useState('quota');
     const [note, setNote] = useState('');
     const [busy, run] = useBusy();
+    void u;
     const reject = () =>
       run(async () => {
         if (!app.guard(props.clubId)) return;
-        await app.api();
-        const snap = app.store.get();
-        app.dispatch('membership.reject', {
-          clubId: props.clubId,
-          userId: props.userId,
-          actorId: u,
-          reason,
-          note: note.trim(),
-        });
-        app.ui.closeAllSheets();
-        app.toast('TST-28', {
-          name: usr.name,
-          undo: () => app.store.restore(snap),
-        });
+        const ok = await decide(props.clubId, props.userId, () => A.reject(props.clubId, props.userId, reason, note.trim()));
+        ui.closeAllSheets();
+        if (ok) {
+          props.onDone && props.onDone();
+          app.toast('TST-28', {
+            name: usr.name,
+            undo: () => A.undoDecision(props.clubId, props.userId).catch(handleError),
+          });
+        }
       });
     return (
       <SheetFrame
@@ -1979,7 +1959,8 @@ SHEETS['SHT-21'] = {
     const myRole = sel().roleIn(props.clubId, u);
     const isPres = myRole === 'president' || sel().isSuper(u);
     const canAct = isPres || (myRole === 'board' && m && m.role === 'member');
-    const go = (fn) => () => {
+    void m;
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -2042,7 +2023,7 @@ SHEETS['SHT-22'] = {
   }),
   comp: ({ props, close }) => {
     const m = sel().membership(props.clubId, props.userId);
-    const [role, setRole] = useState(m ? m.role : 'member');
+    const [role, setRole] = useState<string>(m ? m.role : 'member');
     return (
       <SheetFrame
         id="SHT-22"
@@ -2101,11 +2082,12 @@ SHEETS['SHT-23'] = {
     const u = app.uid();
     const ev = sel().event(props.eventId);
     if (!ev) return null;
-    const go = (fn) => () => {
+    void u;
+    const go = (fn: () => void) => () => {
       close();
       if (app.guard(ev.clubId)) fn();
     };
-    const goFree = (fn) => () => {
+    const goFree = (fn: () => void) => () => {
       close();
       fn();
     };
@@ -2127,10 +2109,9 @@ SHEETS['SHT-23'] = {
           label={t('sht.23.duplicate')}
           action="SHT-23.duplicate"
           onClick={go(() => {
-            app.dispatch('event.duplicate', {
-              eventId: ev.id,
-            });
-            app.toast('TST-13');
+            A.duplicateEvent(ev, t('web.event.copySuffix'))
+              .then(() => app.toast('TST-13'))
+              .catch(handleError);
           })}
         />
         <Row
@@ -2173,10 +2154,9 @@ SHEETS['SHT-23'] = {
               label={t('sht.23.unpublish')}
               action="SHT-23.unpublish"
               onClick={go(() => {
-                app.dispatch('event.unpublish', {
-                  eventId: ev.id,
-                });
-                app.toast('TST-X19');
+                A.unpublishEvent(ev)
+                  .then(() => app.toast('TST-X19'))
+                  .catch(handleError);
               })}
             />
             <Row
@@ -2226,35 +2206,37 @@ SHEETS['SHT-24'] = {
         return () => clearTimeout(id);
       }
     }, []);
-    const color = {
+    const color = ({
       valid: 'success',
       used: 'warning',
       invalid: 'danger',
-    }[props.kind];
-    const icon = {
+    } as any)[props.kind];
+    const icon = ({
       valid: 'circle-check',
       used: 'check-check',
       invalid: 'circle-x',
-    }[props.kind];
+    } as any)[props.kind];
     return (
       <SheetFrame
         id="SHT-24"
         title={t('sht.24.' + props.kind)}
         onClose={close}
-        footer={[
-          props.kind === 'valid' && props.undo ? (
-            <Button
-              variant="outline"
-              label={t('common.undo')}
-              action="SHT-24.undo"
-              onClick={() => {
-                props.undo();
-                close();
-              }}
-            />
-          ) : null,
-          <Button label={t('sht.24.next')} action="SHT-24.next" onClick={close} />,
-        ]}
+        footer={
+          <>
+            {props.kind === 'valid' && props.undo ? (
+              <Button
+                variant="outline"
+                label={t('common.undo')}
+                action="SHT-24.undo"
+                onClick={() => {
+                  props.undo();
+                  close();
+                }}
+              />
+            ) : null}
+            <Button label={t('sht.24.next')} action="SHT-24.next" onClick={close} />
+          </>
+        }
       >
         <div
           className="col gap12 pb16"
@@ -2292,8 +2274,8 @@ SHEETS['SHT-24'] = {
           {ev && props.kind === 'valid' ? (
             <span className="t-caption tnum">
               {t('scan.counter', {
-                a: sel().attended(ev.id).length,
-                b: sel().registered(ev.id).length,
+                a: ev.attendedCount || 0,
+                b: sel().registeredCount(ev),
               })}
             </span>
           ) : null}
@@ -2302,28 +2284,47 @@ SHEETS['SHT-24'] = {
     );
   },
 };
-/* SHT-25 user search */
+/* SHT-25 kullanıcı arama — devir: kulübün aktif üyeleri; atama: ad öneki / e-posta ile Firestore araması. */
 SHEETS['SHT-25'] = {
   title: 'sht.25.assign',
-  sample: () => ({
-    mode: 'assign',
-    onSelect: () => {},
-  }),
-  comp: ({ props, close }) => {
+  comp: ({ props, close }: any) => {
     const [q, setQ] = useState('');
-    const pool =
-      props.mode === 'transfer'
-        ? sel()
-            .clubMembers(props.clubId)
-            .filter((m) => m.role !== 'president' && m.role !== 'advisor')
-            .map((m) => m.user)
-        : Object.values(app.state.users).filter((u) => !u.deleted && !u.staff && u.status === 'active');
-    const list = pool
-      .filter((u) => !q || (u.name + ' ' + u.email).toLocaleLowerCase('tr').includes(q.toLocaleLowerCase('tr')))
-      .sort((a, b) => a.name.localeCompare(b.name, 'tr'))
-      .slice(0, 40);
+    const [found, setFound] = useState<any[]>([]);
+    const [busy, setBusy] = useState(false);
+    const transfer = props.mode === 'transfer';
+    const membersLoad = useLoader(transfer && props.clubId ? LD.allMembersLoader(props.clubId) : null);
+    useEffect(() => {
+      if (transfer) return;
+      const term = trLower(q.trim());
+      let alive = true;
+      const id = setTimeout(async () => {
+        setBusy(true);
+        try {
+          const list = term.includes('@') ? await U.findUserByEmail(term) : (await U.listUsersByName(term)).items;
+          if (alive) setFound(list.filter((u: any) => u.status === 'active' && !u.staff));
+        } catch (e) {
+          if (alive) handleError(e);
+        } finally {
+          if (alive) setBusy(false);
+        }
+      }, 300);
+      return () => {
+        alive = false;
+        clearTimeout(id);
+      };
+      // eslint-disable-next-line
+    }, [q, transfer]);
+    const pool: any[] = transfer
+      ? sel()
+          .clubMembers(props.clubId)
+          .filter((m) => m.role !== 'president' && m.role !== 'advisor' && m.user)
+          .map((m) => m.user)
+          .filter((u) => !q || trLower(u!.name).includes(trLower(q)))
+          .sort((a, b) => a!.name.localeCompare(b!.name, 'tr'))
+      : found;
+    const loading = transfer ? membersLoad.status === 'loading' && !pool.length : busy && !pool.length;
     return (
-      <SheetFrame id="SHT-25" title={props.mode === 'transfer' ? t('sht.25.transfer') : t('sht.25.assign')} onClose={close} full flush>
+      <SheetFrame id="SHT-25" title={transfer ? t('sht.25.transfer') : t('sht.25.assign')} onClose={close} full flush>
         <div className="px16 pb8">
           <Input
             icon="search"
@@ -2335,42 +2336,89 @@ SHEETS['SHT-25'] = {
             autofocus
           />
         </div>
-        {list.map((u) => (
-          <UserRow key={u.id} user={u} sub={deptYear(u)} action={'SHT-25.select.' + u.id} onClick={() => props.onSelect && props.onSelect(u.id)} chevron />
+        {loading ? <SkeletonList n={4} /> : null}
+        {pool.slice(0, 40).map((u) => (
+          <UserRow key={u.id} user={u} sub={deptYear(u)} action={'SHT-25.select.' + u.id} onClick={() => props.onSelect && props.onSelect(u.id, u)} chevron />
         ))}
-        {!list.length ? <p className="t-body-s c-muted center p16">{t('members.noResults')}</p> : null}
+        {!loading && !pool.length ? <p className="t-body-s c-muted center p16">{t('members.noResults')}</p> : null}
       </SheetFrame>
     );
   },
 };
-/* SHT-26 report detail */
+/* SHT-26 şikâyet ayrıntısı — aynı hedefe gelen şikâyetler tek grup (ADM-04). Bildirimden açılırsa reportId ile yüklenir. */
+async function loadReportTarget(g: RP.ReportGroup): Promise<any> {
+  const id = g.targetId;
+  try {
+    switch (g.targetType) {
+      case 'post':
+        return await P.getPost(id, { uid: app.uid()!, isManager: false, isSuper: true });
+      case 'comment':
+        return await CM.getComment(id, true);
+      case 'user':
+        return await U.getUser(id);
+      case 'club':
+        return await getClub(id);
+      default:
+        return await E.getEvent(id, true);
+    }
+  } catch {
+    return null;
+  }
+}
 SHEETS['SHT-26'] = {
   title: 'sht.26.title',
-  sample: () => ({
-    reportId: 'r01',
-  }),
-  comp: ({ props, close }) => {
-    const r = app.state.reports[props.reportId];
+  comp: ({ props, close }: any) => {
+    const [group, setGroup] = useState<RP.ReportGroup | null>(props.group || null);
+    const [target, setTarget] = useState<any>(undefined);
     const [busy, run] = useBusy();
-    if (!r) return null;
-    const st = app.state;
-    const u = app.uid();
-    const target =
-      r.targetType === 'post'
-        ? st.posts[r.targetId]
-        : r.targetType === 'comment'
-          ? st.comments[r.targetId]
-          : r.targetType === 'user'
-            ? st.users[r.targetId]
-            : r.targetType === 'club'
-              ? st.clubs[r.targetId]
-              : st.events[r.targetId];
-    const authorId = r.targetType === 'post' || r.targetType === 'comment' ? (target || {}).authorId : r.targetType === 'user' ? r.targetId : null;
+    useEffect(() => {
+      let alive = true;
+      (async () => {
+        let g: RP.ReportGroup | null = props.group || null;
+        if (!g && props.reportId) {
+          const r = await RP.getReport(props.reportId).catch(() => null);
+          if (r) {
+            const open = await RP.listReportsForTarget(r.targetType, r.targetId).catch(() => [] as any[]);
+            g = RP.groupReports([r, ...open.filter((x: any) => x.id !== r.id)])[0];
+          }
+        }
+        if (!alive) return;
+        setGroup(g);
+        if (!g) {
+          setTarget(null);
+          return;
+        }
+        const tg = await loadReportTarget(g);
+        if (!alive) return;
+        setTarget(tg);
+        if (g.targetType === 'post') db.putPosts(tg ? [tg] : []);
+        if (g.targetType === 'club' && tg) db.putClubs([tg]);
+        await U.loadUsers([...g.reports.map((x) => x.reporterId), tg && tg.authorId, g.targetType === 'user' ? g.targetId : null]);
+      })().catch(handleError);
+      return () => {
+        alive = false;
+      };
+      // eslint-disable-next-line
+    }, []);
+    if (!group)
+      return (
+        <SheetFrame id="SHT-26" title={t('sht.26.title')} onClose={close} full>
+          {target === null ? <p className="t-body-s c-muted p16">{t('saved.removed')}</p> : <SkeletonList n={3} />}
+        </SheetFrame>
+      );
+    const r: any = {
+      ...group.reports[0],
+      status: group.reports.some((x) => x.status === 'open') ? 'open' : 'resolved',
+      reasons: group.reports.slice().sort((a, b) => b.createdAt - a.createdAt),
+    };
+    const authorId = r.targetType === 'post' || r.targetType === 'comment' ? (target || ({} as any)).authorId : r.targetType === 'user' ? r.targetId : null;
+    const onDone = () => props.onDone && props.onDone();
     const preview = () => {
+      if (target === undefined) return <SkeletonList n={1} />;
       if (!target) return <p className="t-body-s c-muted">{t('saved.removed')}</p>;
       if (r.targetType === 'post') return <PostCard post={target} screen="SHT-26" hideActions showClub />;
       if (r.targetType === 'comment') {
-        const a = st.users[target.authorId];
+        const a = sel().user(target.authorId);
         return (
           <Card
             muted
@@ -2395,9 +2443,13 @@ SHEETS['SHT-26'] = {
         );
       return (
         <Card muted class="card-body row gap12">
-          <span className="emblem is-sm">
-            <Icon name={target.iconName || 'calendar'} size={20} />
-          </span>
+          {r.targetType === 'club' ? (
+            <ClubEmblem club={target} cls="is-sm" size={20} />
+          ) : (
+            <span className="emblem is-sm">
+              <Icon name="calendar" size={20} />
+            </span>
+          )}
           <span className="t-title-s">{target.name || target.title}</span>
         </Card>
       );
@@ -2405,12 +2457,8 @@ SHEETS['SHT-26'] = {
     const closeReport = () =>
       run(async () => {
         if (!app.requireOnline()) return;
-        await app.api();
-        app.dispatch('report.resolve', {
-          reportId: r.id,
-          action: 'dismissed',
-          actorId: u,
-        });
+        await A.resolveReports(group, 'dismissed');
+        onDone();
         close();
         app.toast('TST-56');
       });
@@ -2421,10 +2469,10 @@ SHEETS['SHT-26'] = {
         onClose={close}
         full
         footer={
-          r.status === 'open'
-            ? [
-                <Button variant="outline" label={t('sht.26.close')} loading={busy} action="SHT-26.closeReport" onClick={closeReport} />,
-                authorId ? (
+          r.status === 'open' ? (
+            <>
+              <Button variant="outline" label={t('sht.26.close')} loading={busy} action="SHT-26.closeReport" onClick={closeReport} />
+              {authorId ? (
                   <Button
                     variant="danger-outline"
                     label={t('sht.26.suspendUser')}
@@ -2432,19 +2480,21 @@ SHEETS['SHT-26'] = {
                     onClick={() =>
                       app.openDialog('DLG-30', {
                         userId: authorId,
-                        reportId: r.id,
+                        group,
+                        onDone,
                       })
                     }
                   />
-                ) : null,
-                r.targetType === 'post' || r.targetType === 'comment' ? (
+                ) : null}
+              {r.targetType === 'post' || r.targetType === 'comment' ? (
                   <Button
                     variant="danger"
                     label={t('sht.26.remove')}
                     action="SHT-26.removeContent"
                     onClick={() =>
                       app.openDialog('DLG-29', {
-                        reportId: r.id,
+                        group,
+                        onDone,
                       })
                     }
                   />
@@ -2456,13 +2506,14 @@ SHEETS['SHT-26'] = {
                     onClick={() =>
                       app.openDialog('DLG-28', {
                         clubId: r.targetId,
-                        reportId: r.id,
+                        group,
+                        onDone,
                       })
                     }
                   />
-                ) : null,
-              ]
-            : null
+                ) : null}
+            </>
+          ) : null
         }
       >
         <div className="col gap16 pb16">
@@ -2478,8 +2529,8 @@ SHEETS['SHT-26'] = {
                 count: r.reasons.length,
               })}
             </h3>
-            {r.reasons.map((x, i) => {
-              const rep = st.users[x.reporterId];
+            {r.reasons.map((x: any, i: number) => {
+              const rep = sel().user(x.reporterId);
               return (
                 <div
                   key={i}
@@ -2505,7 +2556,7 @@ SHEETS['SHT-26'] = {
             <Banner
               kind="success"
               text={t('sht.26.resolvedAt', {
-                date: app.fmt.dateTime(r.resolvedAt),
+                date: app.fmt.dateTime(r.resolvedAt || Date.now()),
                 action: t('reportAction.' + r.action),
               })}
               card
@@ -2525,12 +2576,12 @@ SHEETS['SHT-27'] = {
   comp: ({ props, close }) => {
     const usr = sel().user(props.userId);
     const u = app.uid();
-    const blocked = (app.me().blocked || []).includes(props.userId);
-    const go = (fn) => () => {
+    const blocked = session.s.blocked.includes(props.userId);
+    const go = (fn: () => void) => () => {
       close();
       fn();
     };
-    const c = props.commentId ? app.state.comments[props.commentId] : null;
+    const c = props.commentId && props.postId ? (db.comments[props.postId] || []).find((x: any) => x.id === props.commentId) || null : null;
     return (
       <SheetFrame id="SHT-27" title={usr ? usr.name : t('sht.27.title')} onClose={close} menu flush>
         <Row
@@ -2552,6 +2603,7 @@ SHEETS['SHT-27'] = {
             onClick={go(() =>
               app.openDialog('DLG-11', {
                 commentId: c.id,
+                postId: c.postId,
               }),
             )}
           />
@@ -2565,6 +2617,8 @@ SHEETS['SHT-27'] = {
               app.openSheet('SHT-10', {
                 targetType: 'comment',
                 targetId: c.id,
+                postId: c.postId,
+                clubId: c.clubId,
               }),
             )}
           />
@@ -2578,16 +2632,15 @@ SHEETS['SHT-27'] = {
               action="SHT-27.block"
               onClick={go(() => {
                 if (blocked) {
-                  const snap = app.store.get();
-                  app.dispatch('user.unblock', {
-                    userId: u,
-                    targetId: props.userId,
-                  });
-                  app.toast('TST-09', {
-                    name: usr.name,
-                    unblocked: true,
-                    undo: () => app.store.restore(snap),
-                  });
+                  A.unblockUser(props.userId)
+                    .then(() =>
+                      app.toast('TST-09', {
+                        name: usr ? usr.name : '',
+                        unblocked: true,
+                        undo: () => A.blockUser(props.userId).catch(handleError),
+                      }),
+                    )
+                    .catch(handleError);
                 } else
                   app.openDialog('DLG-13', {
                     userId: props.userId,
@@ -2877,7 +2930,7 @@ SHEETS['SHT-31'] = {
     onSelect: () => {},
   }),
   comp: ({ props, close }) => {
-    const [c, setC] = useState(
+    const [c, setC] = useState<any>(
       props.value || {
         palette: 'red',
         pattern: 'mountain',
@@ -2900,12 +2953,12 @@ SHEETS['SHT-31'] = {
               action="SHT-31.gallery"
               onClick={() =>
                 app.openSheet('SHT-16', {
-                  onPick: (seed) => {
+                  onPick: (file: File) => {
                     close();
                     props.onSelect &&
                       props.onSelect({
                         ...c,
-                        seed,
+                        file,
                       });
                   },
                 })
@@ -3010,7 +3063,7 @@ SHEETS['SHT-32'] = {
   title: 'sht.32.title',
   sample: () => ({}),
   comp: ({ close }) => {
-    const [f, setF] = useState({
+    const [f, setF] = useState<any>({
       cur: '',
       nw: '',
       nw2: '',
@@ -3021,8 +3074,8 @@ SHEETS['SHT-32'] = {
     const save = () =>
       run(async () => {
         const e: any = {};
-        if (f.cur !== DEMO_PASSWORD) e.cur = t('auth.err.wrongPassword');
-        if (st < 3) e.nw = t('auth.err.password');
+        if (!f.cur) e.cur = t('auth.err.required');
+        if (st < 3 || f.nw.length < LIMITS.passwordMinLength) e.nw = t('auth.err.password');
         if (f.nw2 !== f.nw) e.nw2 = t('auth.err.mismatch');
         setF({
           ...f,
@@ -3030,7 +3083,14 @@ SHEETS['SHT-32'] = {
         });
         if (Object.keys(e).length) return;
         if (!app.requireOnline()) return;
-        await app.api();
+        try {
+          await AU.changePassword(f.cur, f.nw);
+        } catch (err) {
+          const c = errCode(err);
+          if (c === 'wrongCredentials') return setF({ ...f, errors: { cur: t('auth.err.wrongPassword') } });
+          if (c === 'weakPassword') return setF({ ...f, errors: { nw: t('auth.err.password') } });
+          throw err;
+        }
         close();
         app.toast('TST-44');
       });
@@ -3100,11 +3160,6 @@ SHEETS['SHT-32'] = {
             error={f.errors.nw2}
             action="SHT-32.repeat"
           />
-          <p className="t-caption">
-            {t('auth.demoPassword')}
-            {': '}
-            <span className="code">{DEMO_PASSWORD}</span>
-          </p>
         </div>
       </SheetFrame>
     );
@@ -3139,18 +3194,38 @@ SHEETS['SHT-33'] = {
     </SheetFrame>
   ),
 };
-/* SHT-34 image viewer */
+/* SHT-34 görsel görüntüleyici — gerçek Storage görselleri; kaydırma, çift dokunuş yakınlaştırma, klavye okları. */
+function ViewerImage({ img, club, zoomed }: any) {
+  const url = useStorageUrl(img.url ? null : img.path);
+  const src = img.url || url;
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        maxHeight: '100%',
+        aspectRatio: img.w && img.h ? `${img.w} / ${img.h}` : '1',
+        transform: zoomed ? 'scale(1.8)' : 'none',
+        transition: 'transform .3s var(--ease-emphasized)',
+      }}
+    >
+      {!src ? (
+        <div
+          style={{ position: 'absolute', inset: '0' }}
+          dangerouslySetInnerHTML={{
+            __html: coverArtSVG(img.path || 'img', club ? club.iconName : 'image', club ? club.palette : 'slate', undefined, { w: 600, h: 600 }),
+          }}
+        />
+      ) : (
+        <img src={src} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
+      )}
+    </div>
+  );
+}
 SHEETS['SHT-34'] = {
   title: 'sht.34.title',
-  sample: () => ({
-    images: ['p02-img1', 'p02-img2'],
-    index: 0,
-    post: {
-      clubId: 'c01',
-      id: 'p02',
-    },
-  }),
-  comp: ({ props, close }) => {
+  comp: ({ props, close }: any) => {
+    const images: any[] = props.images || [];
     const [i, setI] = useState(props.index || 0);
     const [zoom, setZoom] = useState(false);
     const ref = useRef<any>(null);
@@ -3160,13 +3235,26 @@ SHEETS['SHT-34'] = {
     const club = props.post ? sel().club(props.post.clubId) : null;
     const trapRef = useRef<any>(null);
     useFocusTrap(trapRef, close);
+    const goTo = (k: number) => {
+      const n = Math.max(0, Math.min(images.length - 1, k));
+      if (ref.current) ref.current.scrollTo({ left: n * ref.current.clientWidth, behavior: 'smooth' });
+      setZoom(false);
+    };
     useEffect(() => {
       if (ref.current) ref.current.scrollLeft = (props.index || 0) * ref.current.clientWidth;
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'ArrowRight') goTo(Math.round(ref.current.scrollLeft / ref.current.clientWidth) + 1);
+        if (e.key === 'ArrowLeft') goTo(Math.round(ref.current.scrollLeft / ref.current.clientWidth) - 1);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+      // eslint-disable-next-line
     }, []);
-    const onDown = (e) => {
+    const onDown = (e: any) => {
+      if (e.pointerType === 'mouse') return;
       start.current = e.clientY;
     };
-    const onMove = (e) => {
+    const onMove = (e: any) => {
       if (start.current != null && !zoom) setDy(Math.max(0, e.clientY - start.current));
     };
     const onUp = () => {
@@ -3204,21 +3292,24 @@ SHEETS['SHT-34'] = {
               color: '#fff',
             }}
           >
-            {i + 1}/{props.images.length}
+            {i + 1}/{images.length}
           </span>
-          <IconButton
-            onCover
-            icon="share-2"
-            label={t('common.share')}
-            action="SHT-34.share"
-            onClick={() =>
-              props.post &&
-              app.openSheet('SHT-15', {
-                type: 'post',
-                id: props.post.id,
-              })
-            }
-          />
+          {props.post ? (
+            <IconButton
+              onCover
+              icon="share-2"
+              label={t('common.share')}
+              action="SHT-34.share"
+              onClick={() =>
+                app.openSheet('SHT-15', {
+                  type: 'post',
+                  id: props.post.id,
+                })
+              }
+            />
+          ) : (
+            <span style={{ width: 44 }} />
+          )}
         </div>
         <div
           ref={ref}
@@ -3226,18 +3317,19 @@ SHEETS['SHT-34'] = {
           style={{
             alignItems: 'center',
           }}
-          onScroll={(e) => setI(Math.round(e.target.scrollLeft / e.target.clientWidth))}
+          onScroll={(e) => setI(Math.round((e.currentTarget as HTMLElement).scrollLeft / (e.currentTarget as HTMLElement).clientWidth))}
           onPointerDown={onDown}
           onPointerMove={onMove}
           onPointerUp={onUp}
           onPointerCancel={onUp}
           data-action="SHT-34.swipe"
         >
-          {props.images.map((s, k) => (
+          {images.map((img, k) => (
             <section
-              key={s}
+              key={img.path || img.url || k}
               style={{
                 padding: '0',
+                overflow: 'hidden',
               }}
               onClick={tap}
               data-action={'SHT-34.zoom.' + k}
@@ -3245,23 +3337,16 @@ SHEETS['SHT-34'] = {
               tabIndex={0}
               aria-label={t('sht.34.zoomHint')}
             >
-              <div
-                style={{
-                  width: '100%',
-                  aspectRatio: '1',
-                  transform: zoom && k === i ? 'scale(1.8)' : 'none',
-                  transition: 'transform .3s var(--ease-emphasized)',
-                }}
-                dangerouslySetInnerHTML={{
-                  __html: coverArtSVG(s, club ? club.iconName : 'image', club ? club.palette : 'slate', undefined, {
-                    w: 600,
-                    h: 600,
-                  }),
-                }}
-              />
+              <ViewerImage img={img} club={club} zoomed={zoom && k === i} />
             </section>
           ))}
         </div>
+        {images.length > 1 ? (
+          <div className="viewer-nav">
+            <IconButton onCover icon="chevron-left" label={t('a11y.prev')} action="SHT-34.prev" disabled={i === 0} onClick={() => goTo(i - 1)} onDisabledClick={() => {}} />
+            <IconButton onCover icon="chevron-right" label={t('a11y.next')} action="SHT-34.next" disabled={i >= images.length - 1} onClick={() => goTo(i + 1)} onDisabledClick={() => {}} />
+          </div>
+        ) : null}
         <p
           className="t-caption center"
           style={{
@@ -3275,4 +3360,3 @@ SHEETS['SHT-34'] = {
     );
   },
 };
-ui.openViewer = (props) => ui.openSheet('SHT-34', props);

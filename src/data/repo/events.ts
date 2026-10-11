@@ -126,12 +126,14 @@ export async function getEvent(eventId: string, canSeeDeleted = false): Promise<
   if (!e || (e.isDeleted && !canSeeDeleted)) throw new AppError('notFound');
   return e;
 }
-export async function listPublicUpcoming(fromUtc: number): Promise<ClubEvent[]> {
-  const qs = await getDocs(query(col(C.events), where('visibility', '==', 'public'), where('status', 'in', ['published', 'cancelled']), where('isDeleted', '==', false), where('startsAt', '>=', Timestamp.fromMillis(fromUtc)), orderBy('startsAt', 'asc'), limit(LIMITS.upcomingEventsFetchMax)));
+const before = (toUtc?: number) => (toUtc ? [where('startsAt', '<', Timestamp.fromMillis(toUtc))] : []);
+/** EVT-01: herkese açık etkinlikler (fromUtc'den itibaren; takvim görünümü için isteğe bağlı üst sınır). */
+export async function listPublicUpcoming(fromUtc: number, toUtc?: number): Promise<ClubEvent[]> {
+  const qs = await getDocs(query(col(C.events), where('visibility', '==', 'public'), where('status', 'in', ['published', 'cancelled']), where('isDeleted', '==', false), where('startsAt', '>=', Timestamp.fromMillis(fromUtc)), ...before(toUtc), orderBy('startsAt', 'asc'), limit(LIMITS.upcomingEventsFetchMax)));
   return fromQuery<ClubEvent>(qs);
 }
-export async function listMembersUpcoming(clubId: string, fromUtc: number): Promise<ClubEvent[]> {
-  const qs = await getDocs(query(col(C.events), where('clubId', '==', clubId), where('visibility', '==', 'members'), where('status', 'in', ['published', 'cancelled']), where('isDeleted', '==', false), where('startsAt', '>=', Timestamp.fromMillis(fromUtc)), orderBy('startsAt', 'asc'), limit(LIMITS.upcomingEventsFetchMax)));
+export async function listMembersUpcoming(clubId: string, fromUtc: number, toUtc?: number): Promise<ClubEvent[]> {
+  const qs = await getDocs(query(col(C.events), where('clubId', '==', clubId), where('visibility', '==', 'members'), where('status', 'in', ['published', 'cancelled']), where('isDeleted', '==', false), where('startsAt', '>=', Timestamp.fromMillis(fromUtc)), ...before(toUtc), orderBy('startsAt', 'asc'), limit(LIMITS.upcomingEventsFetchMax)));
   return fromQuery<ClubEvent>(qs);
 }
 /** Kulübün herkese açık ve (üyeyse) üyelere özel yayınlanmış etkinlikleri — CLB-03. */

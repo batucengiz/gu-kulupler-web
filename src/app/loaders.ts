@@ -74,6 +74,16 @@ export const upcomingLoader = () =>
     db.putEvents([...pub, ...mem.flat()]);
   });
 
+/** EVT-01 takvim görünümü: ayın etkinlikleri (geçmiş günler dahil). */
+export const monthLoader = (monthStart: number) =>
+  L('events:month:' + monthStart, async () => {
+    const d = new Date(monthStart); d.setMonth(d.getMonth() + 1);
+    const to = d.getTime();
+    const mine = Object.values(session.s.memberships).filter((m) => m.status === 'active').map((m) => m.clubId);
+    const [pub, ...mem] = await Promise.all([E.listPublicUpcoming(monthStart, to), ...mine.map((c) => E.listMembersUpcoming(c, monthStart, to).catch(() => []))]);
+    db.putEvents([...pub, ...mem.flat()]);
+  });
+
 /** EVT-04 / PRF: kaydolduğum etkinliklerin belgeleri. */
 export const myEventsLoader = () =>
   L('events:mine', async () => {
@@ -114,6 +124,24 @@ export const profileLoader = (otherId: string, ctxClubId?: string | null) =>
     if (!email && session.s.isSuper) { const { getMyEmail } = await import('../data/repo/users'); email = await getMyEmail(otherId).catch(() => null); }
     db.setExtra('email:' + otherId, email);
   });
+
+/** NTF-01: bildirimlerin başlık/metinleri için başvurulan kulüp, etkinlik, gönderi ve kullanıcıları getir (eksik olanları). */
+export async function loadNotifRefs(list: Array<{ refs?: Record<string, string> }>) {
+  const pick = (k: string) => [...new Set(list.map((n) => (n.refs || {})[k]).filter(Boolean) as string[])];
+  const { getClubs } = await import('../data/repo/clubs');
+  const { getPost } = await import('../data/repo/posts');
+  const clubIds = pick('clubId').filter((id) => !db.clubs[id]);
+  const eventIds = pick('eventId').filter((id) => !db.events[id]);
+  const postIds = pick('postId').filter((id) => !db.posts[id] && !tried.has(id));
+  postIds.forEach((id) => tried.add(id));
+  await Promise.all([
+    clubIds.length ? getClubs(clubIds).then((cs) => db.putClubs(cs)).catch(() => {}) : null,
+    eventIds.length ? E.getEvents(eventIds).then((es) => db.putEvents(es)).catch(() => {}) : null,
+    ...postIds.map((id) => getPost(id).then((p) => db.putPosts([p])).catch(() => {})),
+    loadUsers(pick('applicantId')),
+  ]);
+}
+const tried = new Set<string>();
 
 /** FED-02: gönderi ve yorumları canlı dinle (aynaya yazar). Dönen değer: 'loading' | 'ok' | 'missing' | 'error'. */
 export function usePostLive(postId: string, clubId: string) {
