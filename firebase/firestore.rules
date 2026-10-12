@@ -159,7 +159,7 @@ service cloud.firestore {
           && (d().coverPath == null || (d().coverPath is string && d().coverPath.matches('clubs/' + clubId + '/[^/]+')));
     }
     match /clubs/{clubId} {
-      allow read: if emailOk() && (resource.data.isDeleted == false || isSuper());
+      allow read: if emailOk() && (resource == null || resource.data.isDeleted == false || isSuper());
       allow create: if isSuper() && baseCreate()
           && strBetween(d().name, 1, 60) && d().nameLower is string                   // limit: clubNameMax
           && d().memberCount == 1 && d().status == 'active' && d().suspendReason == null && d().pinnedPostId == null
@@ -237,7 +237,9 @@ service cloud.firestore {
 
     match /memberships/{mid} {
       allow read: if signedIn() && (
-          resource.data.userId == uid()
+          // kendi (henüz var olmayan) üyelik belgesi — transaction içinde önceki durum okunur
+          (resource == null && mid.matches('[^_/]+_' + uid()))
+          || resource.data.userId == uid()
           || seesMgmt(resource.data.clubId)
           || (resource.data.status == 'active' && mActive(resource.data.clubId))
           // yönetici listesi: başvuru bildirimi alıcıları (application_received fan-out)
@@ -392,7 +394,7 @@ service cloud.firestore {
           && (cm.authorId == uid() || isManager(c) || isSuper());
     }
     match /posts/{postId} {
-      allow read: if isSuper()
+      allow read: if isSuper() || (emailOk() && resource == null)
           || (seesInside(resource.data.clubId)
               && ((resource.data.isDeleted == false && resource.data.isHidden == false)
                   || (resource.data.isDeleted == false && seesMgmt(resource.data.clubId))
@@ -449,7 +451,7 @@ service cloud.firestore {
     // ═════ 8 · comments/{commentId} ═══════════════════════════════════════════════════════════
     function postPath(p) { return /databases/$(database)/documents/posts/$(p); }
     match /comments/{commentId} {
-      allow read: if isSuper()
+      allow read: if isSuper() || (emailOk() && resource == null)
           || (seesInside(resource.data.clubId)
               && ((resource.data.isDeleted == false && resource.data.isHidden == false) || seesMgmt(resource.data.clubId)));
       allow create: if activeUser() && d().authorId == uid() && isMember(d().clubId)
@@ -517,7 +519,7 @@ service cloud.firestore {
             && (cap == null || d().goingCount <= cap)));
     }
     match /events/{eventId} {
-      allow read: if isSuper()
+      allow read: if isSuper() || (emailOk() && resource == null)
           || (signedIn() && seesMgmt(resource.data.clubId))
           || (emailOk() && resource.data.isDeleted == false && resource.data.status in ['published', 'cancelled']
               && (resource.data.visibility == 'public' || mActive(resource.data.clubId)));
@@ -570,7 +572,8 @@ service cloud.firestore {
       return request.time >= ev.startsAt - duration.value(2, 'h') && request.time <= ev.endsAt + duration.value(6, 'h');
     }
     match /rsvps/{rid} {
-      allow read: if signedIn() && (resource.data.userId == uid() || seesMgmt(resource.data.clubId)
+      allow read: if signedIn() && ((resource == null && rid.matches('[^_/]+_' + uid()))
+          || resource.data.userId == uid() || seesMgmt(resource.data.clubId)
           // bekleme listesi sırası (count sorgusu)
           || (emailOk() && resource.data.status == 'waitlist'));
       allow create: if rid == d().eventId + '_' + d().userId && d().userId == uid() && activeUser()

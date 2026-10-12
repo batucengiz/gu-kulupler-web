@@ -515,6 +515,16 @@ describe('notifications', () => {
     await assertFails(setDoc(doc(as('memb'), 'notifications', 'application_approved_c1-x_out'), n('application_approved', { clubId: 'c1' }, 'out')));
     await assertSucceeds(setDoc(doc(as('board'), 'notifications', 'application_approved_c1-x_out'), n('application_approved', { clubId: 'c1' }, 'out')));
   });
+  test('fan-out: yönetici 50 alıcılık event_new parçası yazar', async () => {
+    const db = as('board'); const b = writeBatch(db);
+    for (let i = 0; i < 50; i++) b.set(doc(db, 'notifications', `event_new_e1_r${i}`), n('event_new', { clubId: 'c1', eventId: 'e1' }, `r${i}`));
+    await assertSucceeds(b.commit());
+  });
+  test('fan-out: yönetici 50 alıcılık announcement parçası yazar', async () => {
+    const db = as('board'); const b = writeBatch(db);
+    for (let i = 0; i < 50; i++) b.set(doc(db, 'notifications', `announcement_p1_r${i}`), n('announcement', { clubId: 'c1', postId: 'p1' }, `r${i}`));
+    await assertSucceeds(b.commit());
+  });
   test('sistem bildirimi yalnız süper', async () => {
     await assertFails(setDoc(doc(as('pres'), 'notifications', 'system_x_out'), n('system', { textKey: 'x' }, 'out')));
   });
@@ -652,6 +662,32 @@ describe('storage', () => {
     const p = `users/u_burak/t-${rnd()}.jpg`;
     await assertSucceeds(up(st('u_burak'), p));
     await assertFails(deleteObject(sref(st('u_burak'), p)));
+  });
+});
+
+describe('var olmayan belgeler', () => {
+  test('kendi (henüz yok) üyelik/kayıt belgesini okur, başkasınınkini okuyamaz', async () => {
+    await assertSucceeds(getDoc(mref(as('out'), 'c2_out')));
+    await assertFails(getDoc(mref(as('out'), 'c2_new')));
+    await assertSucceeds(getDoc(doc(as('out'), 'rsvps', 'e1_out')));
+    await assertFails(getDoc(doc(as('out'), 'rsvps', 'e1_new')));
+  });
+  test('olmayan kulüp/gönderi/etkinlik "bulunamadı" döner (izin hatası değil)', async () => {
+    for (const c of ['clubs', 'posts', 'events', 'comments']) {
+      const s = await assertSucceeds(getDoc(doc(as('out'), c, 'yok')));
+      assert.equal(s.exists(), false);
+    }
+    await assertFails(getDoc(doc(foreign('x'), 'clubs', 'yok')));
+  });
+  test('anında katılım transaction akışı (önce oku, sonra yaz)', async () => {
+    const { runTransaction } = await import('firebase/firestore');
+    const db = as('out');
+    await assertSucceeds(runTransaction(db, async (tx) => {
+      await tx.get(doc(db, 'clubs', 'c2')); await tx.get(mref(db, 'c2_out'));
+      tx.set(mref(db, 'c2_out'), { clubId: 'c2', userId: 'out', status: 'active', role: 'member', note: '', applicant: { name: 'Kişi out', department: 'd01', year: '2', avatarSeed: 'out' },
+        appliedAt: ts(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null, priorCount: 0, ...create() });
+      tx.update(doc(db, 'clubs', 'c2'), { memberCount: increment(1), lastMembershipRef: 'memberships/c2_out', ...touch() });
+    }));
   });
 });
 

@@ -155,7 +155,10 @@ export const nav = new (class extends Emitter {
   onPopState() {
     if (this.ignorePop) { this.ignorePop = false; return; }
     const st = this.stack();
-    if (this.pushed > 0 && st.length > 1) { this.pushed--; st.pop(); this.anim = 'pop'; this.emit(); return; }
+    // yalnızca adres bir önceki ekranınkiyse "geri"dir; aksi halde (ileri tuşu, elle değişen adres) URL'den kurulur
+    if (this.pushed > 0 && st.length > 1 && location.pathname + location.search === routePath(st[st.length - 2])) {
+      this.pushed--; st.pop(); this.anim = 'pop'; this.emit(); return;
+    }
     // yığının altına inildi ya da ileri gidildi: URL'den yeniden kur
     const r = parsePath(location.pathname, location.search);
     onExternalRoute?.(r.screen, r.params);
