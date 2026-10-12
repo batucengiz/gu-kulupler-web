@@ -7,7 +7,7 @@
 // "Bir şeyler ters gitti" ekranı görülürse senaryo başarısız sayılır. Başarısız adımın ekran görüntüsü e2e/out/ altına yazılır.
 import { chromium } from 'playwright-core';
 import { mkdirSync, existsSync, readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { resetEmulator } from '../scripts/seed.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -24,17 +24,6 @@ const SHOTS = args.includes('--shots');
 if (SHOTS) mkdirSync(path.join(OUT, 'screens'), { recursive: true });
 
 /* ---------------- emülatör verisi ---------------- */
-async function resetEmulator() {
-  if (!PROJECT.startsWith('demo-')) throw new Error('reset yalnız demo projelerinde');
-  await fetch(`http://127.0.0.1:8080/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
-  await fetch(`http://127.0.0.1:9099/emulator/v1/projects/${PROJECT}/accounts`, { method: 'DELETE' });
-  const seed = process.env.GU_SEED_SCRIPT || [path.resolve(ROOT, '..', 'gu_kulupler', 'tool', 'seed', 'seed_emulator.js'), '/mnt/project-files/gu_kulupler/tool/seed/seed_emulator.js'].find((f) => existsSync(f)) || 'seed_emulator.js';
-  if (!existsSync(seed)) throw new Error('seed betiği bulunamadı: ' + seed + ' (GU_SEED_SCRIPT ile verin)');
-  execFileSync('node', [seed, '--project', PROJECT], {
-    cwd: path.resolve(path.dirname(seed), '..', '..'), stdio: ['ignore', 'ignore', 'inherit'],
-    env: { ...process.env, FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080', FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099', FIREBASE_STORAGE_EMULATOR_HOST: '127.0.0.1:9199' },
-  });
-}
 /** Emülatör yönetici REST'i ile tek belge okur (doğrulama için; kurallar devre dışı). */
 async function fsGet(docPath) {
   const r = await fetch(`http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents/${docPath}`, { headers: { Authorization: 'Bearer owner' } });
@@ -513,7 +502,7 @@ scenario('yeni kullanıcı: kayıt → doğrulama → profil → hesap silme', a
 
 /* ---------------- koşucu ---------------- */
 (async () => {
-  if (args.includes('--reset')) await resetEmulator();
+  if (args.includes('--reset')) await resetEmulator({ quiet: true });
   browser = await chromium.launch({ executablePath: CHROME });
   const list = SC.filter((s) => !ONLY || s.name.includes(ONLY));
   let ok = 0; const t0 = Date.now();
