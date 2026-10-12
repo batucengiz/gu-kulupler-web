@@ -1,0 +1,754 @@
+rules_version = '2';
+
+// GÜ Kulüpler — Firestore Security Rules (web istemcisi; Flutter uygulamasıyla aynı veri sözleşmesi).
+// Kaynak: gu_kulupler/docs/firestore-rules-spec.md + PLAN §11. Testler: firebase/test/firestore.rules.test.mjs
+//
+// Değişmez kurallar:
+//  - `allow delete: if false;` her blokta (süper admin dahil). Silme = soft delete (update).
+//  - Sayaçlar (memberCount, goingCount/waitlistCount/attendedCount, commentCount, announcementCounters.count)
+//    yalnızca aynı batch'te eşlik eden iş belgesi yazımıyla ±1 oynar (last*Ref + getAfter, CD-41).
+//  - Süper admin yalnızca `superadmin` custom claim'i ile tanınır.
+//  - DEPLOY ÖNCESİ: Flutter deposundaki firebase/firestore.rules ile birleştirilmelidir (README).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Kimlik ──────────────────────────────────────────────────────────────────────────────────
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function isSuper() { return signedIn() && request.auth.token.get('superadmin', false) == true; }
+    function emailOk() {
+      return signedIn() && request.auth.token.email_verified == true
+          && request.auth.token.email.lower().matches('.*@(ogr\\.gumushane\\.edu\\.tr|gumushane\\.edu\\.tr)');
+    }
+    function docPath(p) { return path('/databases/' + database + '/documents/' + p); }
+    function userPath(id) { return /databases/$(database)/documents/users/$(id); }
+    function me() { return get(userPath(uid())).data; }
+    function activeUser() {
+      return emailOk() && exists(userPath(uid())) && me().status == 'active' && me().profileComplete == true;
+    }
+
+    // ── Üyelik ──────────────────────────────────────────────────────────────────────────────────
+    function mPath(c, u) { return /databases/$(database)/documents/memberships/$(c + '_' + u); }
+    function clubPath(c) { return /databases/$(database)/documents/clubs/$(c); }
+    function hasM(c) { return exists(mPath(c, uid())); }
+    function myM(c) { return get(mPath(c, uid())).data; }
+    function mActive(c) { return signedIn() && hasM(c) && myM(c).status == 'active'; }
+    function isMember(c) { return mActive(c) && myM(c).role in ['member', 'board', 'president']; }
+    function isManager(c) { return mActive(c) && myM(c).role in ['board', 'president']; }
+    function isPres(c) { return mActive(c) && myM(c).role == 'president'; }
+    function isAdvisor(c) { return mActive(c) && myM(c).role == 'advisor'; }
+    function seesInside(c) { return isSuper() || mActive(c); }
+    function seesMgmt(c) { return isSuper() || isManager(c) || isAdvisor(c); }
+
+    // ── Ortak alanlar ───────────────────────────────────────────────────────────────────────────
+    function d() { return request.resource.data; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function baseCreate() {
+      return d().createdAt == request.time && d().updatedAt == request.time && d().isDeleted == false
+          && d().get('deletedAt', null) == null && d().get('deletedBy', null) == null;
+    }
+    function touches(keys) {
+      return changed().hasOnly(keys.concat(['updatedAt'])) && d().updatedAt == request.time;
+    }
+    function isSoftDelete(extra) {
+      return resource.data.isDeleted == false && d().isDeleted == true
+          && d().deletedBy == uid() && d().deletedAt == request.time
+          && touches(['isDeleted', 'deletedAt', 'deletedBy'].concat(extra));
+    }
+    function isRestore(extra) {
+      return resource.data.isDeleted == true && d().isDeleted == false
+          && d().deletedAt == null && d().deletedBy == null
+          && touches(['isDeleted', 'deletedAt', 'deletedBy'].concat(extra));
+    }
+    function strMax(v, n) { return v is string && v.size() <= n; }
+    function strBetween(v, a, b) { return v is string && v.size() >= a && v.size() <= b; }
+    function optStr(v, n) { return v == null || strMax(v, n); }
+    // sayaç ±d — `getAfter` aynı batch'teki yazımı görür
+    function counterDelta(p, field, dd) { return getAfter(p).data[field] == get(p).data[field] + dd; }
+    // İstanbul günü anahtarı (UTC+3, yyyyMMdd) — saat kayması toleransı için ±5 dk komşuları da kabul edilir
+    function pad2(n) { return (n < 10 ? '0' : '') + string(n); }
+    function dayKey(t) { return string(t.year()) + pad2(t.month()) + pad2(t.day()); }
+    function istanbul(t) { return t + duration.value(3, 'h'); }                       // limit: istanbulUtcOffset
+    function dayKeys() {
+      return [dayKey(istanbul(request.time)),
+              dayKey(istanbul(request.time - duration.value(5, 'm'))),             // limit: clockSkewToleranceMinutes
+              dayKey(istanbul(request.time + duration.value(5, 'm')))];            // limit: clockSkewToleranceMinutes
+    }
+    function cooldownOk(v) {                                                        // limit: reapplyCooldown (7 g) ± clockSkew
+      return v is timestamp
+          && v >= request.time + duration.value(7, 'd') - duration.value(5, 'm')
+          && v <= request.time + duration.value(7, 'd') + duration.value(5, 'm');
+    }
+    function deletedName() { return 'Silinmiş kullanıcı'; }
+
+    // ═════ 1 · users/{uid} ═════════════════════════════════════════════════════════════════════
+    match /users/{userId} {
+      allow read: if emailOk() || (signedIn() && uid() == userId);
+      allow create: if signedIn() && uid() == userId && emailOk()
+          && d().keys().hasOnly(['name', 'nameLower', 'avatarSeed', 'avatarPath', 'department', 'year', 'interests', 'bio',
+                                 'status', 'suspendReason', 'staff', 'profileComplete', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && strBetween(d().name, 2, 60)                                            // limit: nameMin, nameMax
+          && d().nameLower is string && d().status == 'active' && d().suspendReason == null
+          && d().staff == false && d().profileComplete == false
+          && d().avatarPath == null && d().interests is list && d().interests.size() == 0
+          && baseCreate();
+      allow update: if
+          // profil düzenleme (sahibi)
+          (signedIn() && uid() == userId && emailOk() && resource.data.status == 'active'
+            && touches(['name', 'nameLower', 'avatarSeed', 'avatarPath', 'department', 'year', 'interests', 'bio', 'profileComplete'])
+            && strBetween(d().name, 2, 60) && d().nameLower is string                // limit: nameMin, nameMax
+            && strMax(d().get('bio', ''), 140)                                       // limit: bioMax
+            && d().interests is list && d().interests.size() <= 5                    // limit: interestsMax
+            && (d().avatarPath == null || (d().avatarPath is string && d().avatarPath.matches('users/' + userId + '/[^/]+')))
+            && (d().profileComplete == false || d().interests.size() >= 1))         // limit: interestsMin
+          // hesap silme — ilk adım (anonimleştir + soft delete)
+          || (signedIn() && uid() == userId && resource.data.status in ['active', 'suspended']
+            && d().status == 'deleted' && d().name == deletedName() && d().bio == '' && d().interests.size() == 0
+            && d().avatarPath == null && d().department == null && d().year == null
+            && isSoftDelete(['name', 'nameLower', 'bio', 'interests', 'avatarPath', 'department', 'year', 'status']))
+          // yalnızca updatedAt (hesap silme parçaları aynı batch'te users belgesine dokunur)
+          || (signedIn() && uid() == userId && touches([]))
+          // süper admin: askı / etkinleştirme
+          || (isSuper() && resource.data.status != 'deleted' && touches(['status', 'suspendReason'])
+            && ((d().status == 'suspended' && strBetween(d().suspendReason, 1, 300))    // limit: adminReasonMax
+                || (d().status == 'active' && d().suspendReason == null)));
+      allow delete: if false;
+
+      // 2 · users/{uid}/private/account
+      match /private/{docId} {
+        allow read: if signedIn() && (uid() == userId || isSuper());
+        allow create: if signedIn() && uid() == userId && docId == 'account'
+            && d().keys().hasOnly(['email', 'emailLower', 'fcmTokens', 'lastLoginAt', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+            && d().email is string && d().email.lower() == request.auth.token.email.lower() && d().emailLower == d().email.lower()
+            && d().fcmTokens is list && d().fcmTokens.size() == 0 && d().lastLoginAt == null && baseCreate();
+        allow update: if signedIn() && uid() == userId && docId == 'account' && (
+            (touches(['lastLoginAt']) && d().lastLoginAt == request.time)
+            || (touches(['fcmTokens']) && d().fcmTokens is list && d().fcmTokens.size() <= 10)      // limit: fcmTokensMax
+            || (touches(['email', 'emailLower', 'fcmTokens']) && d().email == '' && d().emailLower == ''
+                && getAfter(userPath(userId)).data.status == 'deleted'));
+        allow delete: if false;
+      }
+    }
+
+    // ═════ 3 · clubs/{clubId} ═════════════════════════════════════════════════════════════════
+    // memberCount ±1, aynı batch'te `lastMembershipRef` ile gösterilen üyelik geçişiyle eşleşmeli.
+    function memberBumpOk(clubId) {
+      let ref = d().lastMembershipRef;
+      let dd = d().memberCount - resource.data.memberCount;
+      return ref is string && ref.matches('memberships/' + clubId + '_[^/]+')
+          && memberBumpPair(clubId, docPath(ref), dd);
+    }
+    function memberBumpPair(clubId, p, dd) {
+      let m = getAfter(p).data;
+      let bs = exists(p) ? get(p).data.status : 'none';
+      let br = exists(p) ? get(p).data.role : 'none';
+      return m.clubId == clubId && m.role != 'advisor'
+          && ((dd == 1 && m.status == 'active' && bs != 'active')
+              || (dd == -1 && m.status in ['left', 'removed', 'pending'] && bs == 'active' && br != 'advisor'))
+          && (isSuper() || m.userId == uid() || isManager(clubId));
+    }
+    function presidentOk(clubId) {
+      return getAfter(mPath(clubId, d().presidentId)).data.role == 'president'
+          && getAfter(mPath(clubId, d().presidentId)).data.status == 'active';
+    }
+    function clubSettingsOk(clubId) {
+      return strMax(d().summary, 160) && strMax(d().about, 1000)                  // limit: clubSummaryMax, clubAboutMax
+          && d().conditions is list && d().conditions.size() <= 10                   // limit: conditionsMax
+          && d().social is map && d().approvalRequired is bool && d().applicationsOpen is bool && d().requireNote is bool
+          && (d().logoPath == null || (d().logoPath is string && d().logoPath.matches('clubs/' + clubId + '/[^/]+')))
+          && (d().coverPath == null || (d().coverPath is string && d().coverPath.matches('clubs/' + clubId + '/[^/]+')));
+    }
+    match /clubs/{clubId} {
+      allow read: if emailOk() && (resource.data.isDeleted == false || isSuper());
+      allow create: if isSuper() && baseCreate()
+          && strBetween(d().name, 1, 60) && d().nameLower is string                   // limit: clubNameMax
+          && d().memberCount == 1 && d().status == 'active' && d().suspendReason == null && d().pinnedPostId == null
+          && d().lastMembershipRef == 'memberships/' + clubId + '_' + d().presidentId
+          && presidentOk(clubId) && clubSettingsOk(clubId);
+      allow update: if resource.data.isDeleted == false && (
+          // sayaç dalı (üyelik geçişleriyle aynı batch)
+          (changed().hasOnly(['memberCount', 'lastMembershipRef', 'updatedAt']) && d().updatedAt == request.time && memberBumpOk(clubId))
+          // yönetici: kulüp ayarları (MGT-07)
+          || (isManager(clubId) && resource.data.status == 'active'
+              && touches(['summary', 'about', 'conditions', 'social', 'approvalRequired', 'applicationsOpen', 'requireNote',
+                          'palette', 'pattern', 'coverSeed', 'logoPath', 'coverPath'])
+              && clubSettingsOk(clubId))
+          // yönetici: sabitlenen gönderi
+          || (isManager(clubId) && touches(['pinnedPostId'])
+              && (d().pinnedPostId == null
+                  || (getAfter(/databases/$(database)/documents/posts/$(d().pinnedPostId)).data.clubId == clubId
+                      && getAfter(/databases/$(database)/documents/posts/$(d().pinnedPostId)).data.pinned == true)))
+          // başkan: devir (M11) — eski başkan board, yeni başkan president olur
+          || (isPres(clubId) && touches(['presidentId']) && presidentOk(clubId)
+              && getAfter(mPath(clubId, uid())).data.role == 'board')
+          // süper admin: kimlik, durum, danışman, başkan atama (+ gerekirse sayaç)
+          || (isSuper() && d().updatedAt == request.time
+              && !changed().hasAny(['createdAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+              && d().status in ['active', 'suspended'] && strBetween(d().name, 1, 60)       // limit: clubNameMax
+              && (!changed().hasAny(['memberCount']) || memberBumpOk(clubId))
+              && (!changed().hasAny(['presidentId']) || presidentOk(clubId))
+              && clubSettingsOk(clubId)));
+      allow delete: if false;
+    }
+
+    // ═════ 4 · memberships/{clubId}_{userId} ══════════════════════════════════════════════════
+    function mFields() {
+      return ['clubId', 'userId', 'status', 'role', 'note', 'applicant', 'appliedAt', 'decidedAt', 'decidedBy', 'retryAfter',
+              'rejectReason', 'rejectNote', 'priorCount', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy', 'stale'];
+    }
+    function decisionKeys() { return ['decidedAt', 'decidedBy', 'retryAfter', 'rejectReason', 'rejectNote']; }
+    function clearedDecision() {
+      return d().decidedAt == null && d().decidedBy == null && d().retryAfter == null && d().rejectReason == null && d().rejectNote == null;
+    }
+    function joinableClub(c) {
+      let club = get(clubPath(c)).data;
+      return club.isDeleted == false && club.status == 'active' && club.applicationsOpen == true;
+    }
+    function applicantOk() {
+      return d().applicant is map && d().applicant.name == me().name;
+    }
+    // hedef `pending` (başvuru) — onay gerektiren kulüp, not kuralı
+    function pendingTargetOk(c) {
+      let club = get(clubPath(c)).data;
+      return d().status == 'pending' && d().role == 'member' && joinableClub(c)
+          && strMax(d().note, 300)                                                   // limit: applicationNoteMax
+          && (club.requireNote != true || d().note.size() > 0)
+          && d().appliedAt == request.time;
+    }
+    // hedef `active` (anında katıl) — onay gerektirmeyen kulüp + memberCount +1
+    function activeTargetOk(c, mid) {
+      return d().status == 'active' && d().role == 'member' && joinableClub(c)
+          && get(clubPath(c)).data.approvalRequired == false
+          && d().appliedAt == request.time
+          && counterDelta(clubPath(c), 'memberCount', 1)
+          && getAfter(clubPath(c)).data.lastMembershipRef == 'memberships/' + mid;
+    }
+    function reapplyKeys() { return ['status', 'role', 'note', 'applicant', 'appliedAt', 'priorCount'].concat(decisionKeys()); }
+    function memberDecr(c, mid) {
+      return counterDelta(clubPath(c), 'memberCount', -1) && getAfter(clubPath(c)).data.lastMembershipRef == 'memberships/' + mid;
+    }
+    function memberIncr(c, mid) {
+      return counterDelta(clubPath(c), 'memberCount', 1) && getAfter(clubPath(c)).data.lastMembershipRef == 'memberships/' + mid;
+    }
+    function undoWindowOk() {                                                       // limit: managerUndoWindow (30 sn)
+      return resource.data.decidedBy == uid() && resource.data.decidedAt is timestamp
+          && request.time < resource.data.decidedAt + duration.value(30, 's');
+    }
+
+    match /memberships/{mid} {
+      allow read: if signedIn() && (
+          resource.data.userId == uid()
+          || seesMgmt(resource.data.clubId)
+          || (resource.data.status == 'active' && mActive(resource.data.clubId))
+          // yönetici listesi: başvuru bildirimi alıcıları (application_received fan-out)
+          || (emailOk() && resource.data.status == 'active' && resource.data.role in ['board', 'president']));
+
+      allow create: if mid == d().clubId + '_' + d().userId && d().keys().hasOnly(mFields()) && baseCreate() && (
+          // M1 başvur / M2 anında katıl
+          (d().userId == uid() && activeUser() && applicantOk() && d().priorCount == 0 && clearedDecision()
+            && ((get(clubPath(d().clubId)).data.approvalRequired == true && pendingTargetOk(d().clubId))
+                || activeTargetOk(d().clubId, mid)))
+          // süper admin: kulüp oluşturma (başkan/danışman), başkan atama (M11), danışman atama (M13)
+          || (isSuper() && d().status == 'active' && d().role in ['president', 'advisor'] && d().priorCount == 0
+            && (d().role == 'advisor' || getAfter(clubPath(d().clubId)).data.presidentId == d().userId)));
+
+      allow update: if d().clubId == resource.data.clubId && d().userId == resource.data.userId && (
+          // ── sahibi ──
+          (resource.data.userId == uid() && (
+            // M3 left/cancelled → pending|active
+            (activeUser() && resource.data.status in ['left', 'cancelled'] && touches(reapplyKeys()) && applicantOk()
+              && d().priorCount == resource.data.priorCount + 1 && clearedDecision()
+              && ((get(clubPath(d().clubId)).data.approvalRequired == true && pendingTargetOk(d().clubId))
+                  || activeTargetOk(d().clubId, mid)))
+            // M4 rejected/removed → pending (bekleme süresi sonrası)
+            || (activeUser() && resource.data.status in ['rejected', 'removed'] && touches(reapplyKeys()) && applicantOk()
+              && (resource.data.retryAfter == null || request.time >= resource.data.retryAfter)
+              && d().priorCount == resource.data.priorCount + 1 && clearedDecision() && pendingTargetOk(d().clubId))
+            // M7 başvuruyu geri çek
+            || (activeUser() && resource.data.status == 'pending' && d().status == 'cancelled' && touches(['status']))
+            // T-16 başvuru notu düzenle
+            || (activeUser() && resource.data.status == 'pending' && touches(['note']) && strMax(d().note, 300))   // limit: applicationNoteMax
+            // M8 ayrıl
+            || (emailOk() && resource.data.status == 'active' && resource.data.role in ['member', 'board']
+              && d().status == 'left' && touches(['status']) && memberDecr(d().clubId, mid))
+            // M14 hesap silme: anonimleştir
+            || (getAfter(userPath(uid())).data.status == 'deleted' && touches(['status', 'applicant'])
+              && d().applicant.name == deletedName() && d().applicant.department == null && d().applicant.year == null
+              && ((resource.data.status == 'active' && d().status == 'left'
+                    && (resource.data.role == 'advisor' || memberDecr(d().clubId, mid)))
+                  || (resource.data.status == 'pending' && d().status == 'cancelled')
+                  || (!(resource.data.status in ['active', 'pending']) && d().status == resource.data.status)))))
+          // ── yönetici ──
+          || (resource.data.userId != uid() && isManager(resource.data.clubId) && (
+            // M5 onayla
+            (resource.data.status == 'pending' && d().status == 'active' && d().role == 'member'
+              && d().decidedBy == uid() && d().decidedAt == request.time
+              && touches(['status', 'role', 'decidedAt', 'decidedBy']) && memberIncr(d().clubId, mid))
+            // M6 reddet
+            || (resource.data.status == 'pending' && d().status == 'rejected'
+              && d().decidedBy == uid() && d().decidedAt == request.time && cooldownOk(d().retryAfter)
+              && d().rejectReason in ['quota', 'criteria', 'missing', 'other'] && optStr(d().rejectNote, 200)   // limit: rejectNoteMax
+              && touches(['status'].concat(decisionKeys())))
+            // M9 çıkar (başkan: üye+yönetim; yönetim: yalnız üye)
+            || (resource.data.status == 'active' && resource.data.role in ['member', 'board']
+              && (isPres(resource.data.clubId) || resource.data.role == 'member')
+              && d().status == 'removed' && d().decidedBy == uid() && d().decidedAt == request.time
+              && cooldownOk(d().retryAfter) && d().rejectReason == 'other' && optStr(d().rejectNote, 200)        // limit: rejectNoteMax
+              && touches(['status'].concat(decisionKeys())) && memberDecr(d().clubId, mid))
+            // M10 rol değiştir (yalnız başkan)
+            || (isPres(resource.data.clubId) && resource.data.status == 'active'
+              && resource.data.role in ['member', 'board'] && d().role in ['member', 'board'] && touches(['role']))
+            // M11 devir — yeni başkan
+            || (isPres(resource.data.clubId) && resource.data.status == 'active' && resource.data.role in ['member', 'board']
+              && d().role == 'president' && touches(['role'])
+              && getAfter(clubPath(d().clubId)).data.presidentId == resource.data.userId
+              && getAfter(mPath(d().clubId, uid())).data.role == 'board')
+            // M12 (a) kararı geri al
+            || (undoWindowOk() && resource.data.status in ['active', 'rejected'] && resource.data.role == 'member'
+              && d().status == 'pending' && clearedDecision() && touches(['status'].concat(decisionKeys()))
+              && (resource.data.status == 'rejected' || memberDecr(d().clubId, mid)))
+            // M12 (b) çıkarmayı geri al
+            || (undoWindowOk() && resource.data.status == 'removed' && d().status == 'active' && d().role == 'member'
+              && clearedDecision() && touches(['status', 'role'].concat(decisionKeys())) && memberIncr(d().clubId, mid))))
+          // M11 devir — eski başkan (kendi belgesi)
+          || (resource.data.userId == uid() && isPres(resource.data.clubId) && resource.data.role == 'president'
+              && d().role == 'board' && touches(['role'])
+              && getAfter(clubPath(d().clubId)).data.presidentId != uid()
+              && presidentOk2(d().clubId))
+          // ── süper admin (M9/M10/M11/M13) ──
+          || (isSuper() && d().updatedAt == request.time && !changed().hasAny(['createdAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+              && d().status in ['active', 'left', 'removed', 'pending', 'rejected', 'cancelled']
+              && d().role in ['member', 'board', 'president', 'advisor']));
+      allow delete: if false;
+
+      // 5 · memberships/{id}/private/contact — başvuranın e-postası (yönetim görür)
+      match /private/{docId} {
+        allow read: if signedIn() && docId == 'contact'
+            && (get(/databases/$(database)/documents/memberships/$(mid)).data.userId == uid()
+                || seesMgmt(get(/databases/$(database)/documents/memberships/$(mid)).data.clubId));
+        allow create: if docId == 'contact' && d().keys().hasOnly(['email', 'emailLower', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+            && d().email is string && d().emailLower == d().email.lower() && baseCreate()
+            && ((signedIn() && getAfter(/databases/$(database)/documents/memberships/$(mid)).data.userId == uid()
+                 && d().email.lower() == request.auth.token.email.lower())
+                || isSuper());
+        allow update: if signedIn() && docId == 'contact'
+            && get(/databases/$(database)/documents/memberships/$(mid)).data.userId == uid()
+            && touches(['email', 'emailLower']) && d().email == '' && d().emailLower == ''
+            && getAfter(userPath(uid())).data.status == 'deleted';
+        allow delete: if false;
+      }
+    }
+    function presidentOk2(c) {
+      let np = getAfter(clubPath(c)).data.presidentId;
+      return getAfter(mPath(c, np)).data.role == 'president' && getAfter(mPath(c, np)).data.status == 'active';
+    }
+
+    // ═════ 6 · posts/{postId} ═════════════════════════════════════════════════════════════════
+    function counterPath(c, k) { return /databases/$(database)/documents/announcementCounters/$(c + '_' + k); }
+    function announceCounterPaired(c, postId) {
+      let keys = dayKeys();
+      return getAfter(counterPath(c, keys[0])).data.get('lastPostRef', null) == 'posts/' + postId
+          || getAfter(counterPath(c, keys[1])).data.get('lastPostRef', null) == 'posts/' + postId
+          || getAfter(counterPath(c, keys[2])).data.get('lastPostRef', null) == 'posts/' + postId;
+    }
+    function imagesOk(postId) {
+      let imgs = d().images;
+      return imgs is list && imgs.size() <= 4                                         // limit: postImagesMax
+          && (imgs.size() < 1 || imgs[0].path.matches('posts/' + postId + '/[^/]+'))
+          && (imgs.size() < 2 || imgs[1].path.matches('posts/' + postId + '/[^/]+'))
+          && (imgs.size() < 3 || imgs[2].path.matches('posts/' + postId + '/[^/]+'))
+          && (imgs.size() < 4 || imgs[3].path.matches('posts/' + postId + '/[^/]+'));
+    }
+    function postContentOk(postId) {
+      return strMax(d().text, 1000) && optStr(d().get('title', null), 80) && imagesOk(postId);   // limit: postTextMax, postTitleMax
+    }
+    function pollOk() {
+      return d().type != 'poll' || (d().poll is map && d().poll.options is list
+          && d().poll.options.size() >= 2 && d().poll.options.size() <= 4             // limit: pollOptionsMin, pollOptionsMax
+          && d().poll.endsAt is timestamp && d().poll.endsAt > request.time
+          && d().poll.endsAt <= request.time + duration.value(8, 'd'));              // limit: pollDurationMax (+1 g pay)
+    }
+    function likeOk(c) {
+      let dl = d().likeCount - resource.data.likeCount;
+      let before = resource.data.likes;
+      let after = d().likes;
+      return isMember(c) && changed().hasOnly(['likes', 'likeCount'])
+          && after.size() - before.size() == dl
+          && ((dl == 1 && !(uid() in before) && uid() in after && after.hasAll(before))
+              || (dl == -1 && uid() in before && !(uid() in after) && before.hasAll(after)));
+    }
+    function commentBumpOk(c, postId) {
+      let ref = d().lastCommentRef;
+      let dc = d().commentCount - resource.data.commentCount;
+      return changed().hasOnly(['commentCount', 'lastCommentRef', 'updatedAt'])
+          && ref is string && ref.matches('comments/[^/]+') && commentPair(c, postId, docPath(ref), dc);
+    }
+    function commentPair(c, postId, p, dc) {
+      let cm = getAfter(p).data;
+      let bd = exists(p) ? get(p).data.isDeleted : 'none';
+      return cm.postId == postId
+          && ((dc == 1 && cm.isDeleted == false && (bd == 'none' || bd == true))
+              || (dc == -1 && cm.isDeleted == true && bd == false))
+          && (cm.authorId == uid() || isManager(c) || isSuper());
+    }
+    match /posts/{postId} {
+      allow read: if isSuper()
+          || (seesInside(resource.data.clubId)
+              && ((resource.data.isDeleted == false && resource.data.isHidden == false)
+                  || (resource.data.isDeleted == false && seesMgmt(resource.data.clubId))
+                  || (resource.data.isDeleted == false && resource.data.authorId == uid())));
+      allow create: if activeUser() && isManager(d().clubId) && d().authorId == uid()
+          && get(clubPath(d().clubId)).data.status == 'active'
+          && d().keys().hasOnly(['clubId', 'authorId', 'type', 'title', 'text', 'images', 'poll', 'pinned', 'pushSent', 'likes', 'likeCount',
+                                 'commentCount', 'lastCommentRef', 'isHidden', 'hiddenBy', 'hiddenAt', 'editedAt',
+                                 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().type in ['post', 'announcement', 'poll'] && postContentOk(postId) && pollOk()
+          && (d().type == 'poll' || d().poll == null)
+          && d().pinned == false && d().likes.size() == 0 && d().likeCount == 0 && d().commentCount == 0
+          && d().lastCommentRef == null && d().isHidden == false && d().editedAt == null && baseCreate()
+          && d().pushSent is bool && (d().pushSent == false || (d().type == 'announcement' && announceCounterPaired(d().clubId, postId)));
+      allow update: if d().clubId == resource.data.clubId && d().authorId == resource.data.authorId && d().type == resource.data.type && (
+          // düzenle
+          (isManager(resource.data.clubId) && resource.data.isDeleted == false
+            && touches(['text', 'title', 'images', 'editedAt']) && d().editedAt == request.time && postContentOk(postId))
+          // beğeni (updatedAt yazılmaz)
+          || (resource.data.isDeleted == false && likeOk(resource.data.clubId))
+          // yorum sayacı (yorumla aynı batch)
+          || commentBumpOk(resource.data.clubId, postId)
+          // sabitle / kaldır
+          || (isManager(resource.data.clubId) && touches(['pinned'])
+            && (d().pinned == false || getAfter(clubPath(resource.data.clubId)).data.pinnedPostId == postId))
+          // soft delete / geri al
+          || (isManager(resource.data.clubId) && isSoftDelete(['pinned']) && d().pinned == false)
+          || (isManager(resource.data.clubId) && isRestore([]))
+          // süper admin: gizle (bildirim çözümü) / göster
+          || (isSuper() && touches(['isHidden', 'hiddenBy', 'hiddenAt'])
+            && ((d().isHidden == true && d().hiddenBy == uid() && d().hiddenAt == request.time)
+                || (d().isHidden == false && d().hiddenBy == null && d().hiddenAt == null))));
+      allow delete: if false;
+
+      // 7 · posts/{postId}/votes/{uid}
+      match /votes/{voterId} {
+        allow read: if signedIn() && (voterId == uid()
+            || seesInside(get(/databases/$(database)/documents/posts/$(postId)).data.clubId));
+        allow create: if signedIn() && voterId == uid() && activeUser()
+            && d().keys().hasOnly(['optionId', 'createdAt']) && d().createdAt == request.time
+            && voteOk(get(/databases/$(database)/documents/posts/$(postId)).data);
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+    function voteOk(p) {
+      return isMember(p.clubId) && p.type == 'poll' && p.isDeleted == false && p.isHidden == false
+          && request.time < p.poll.endsAt
+          && d().optionId is string
+          && (d().optionId in ['o1', 'o2'] || (d().optionId == 'o3' && p.poll.options.size() >= 3)
+              || (d().optionId == 'o4' && p.poll.options.size() >= 4));
+    }
+
+    // ═════ 8 · comments/{commentId} ═══════════════════════════════════════════════════════════
+    function postPath(p) { return /databases/$(database)/documents/posts/$(p); }
+    match /comments/{commentId} {
+      allow read: if isSuper()
+          || (seesInside(resource.data.clubId)
+              && ((resource.data.isDeleted == false && resource.data.isHidden == false) || seesMgmt(resource.data.clubId)));
+      allow create: if activeUser() && d().authorId == uid() && isMember(d().clubId)
+          && d().keys().hasOnly(['postId', 'clubId', 'authorId', 'text', 'isHidden', 'hiddenBy', 'hiddenAt',
+                                 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && strBetween(d().text, 1, 500)                                               // limit: commentMax
+          && d().isHidden == false && d().hiddenBy == null && d().hiddenAt == null && baseCreate()
+          && get(postPath(d().postId)).data.clubId == d().clubId
+          && get(postPath(d().postId)).data.isDeleted == false && get(postPath(d().postId)).data.isHidden == false
+          && counterDelta(postPath(d().postId), 'commentCount', 1)
+          && getAfter(postPath(d().postId)).data.lastCommentRef == 'comments/' + commentId;
+      allow update: if d().postId == resource.data.postId && d().clubId == resource.data.clubId && d().authorId == resource.data.authorId && (
+          // sil (yazar / yönetici / süper) — commentCount −1 aynı batch
+          ((resource.data.authorId == uid() || isManager(resource.data.clubId) || isSuper()) && isSoftDelete([])
+            && counterDelta(postPath(resource.data.postId), 'commentCount', -1)
+            && getAfter(postPath(resource.data.postId)).data.lastCommentRef == 'comments/' + commentId)
+          // geri al — +1
+          || ((resource.data.deletedBy == uid() || isManager(resource.data.clubId) || isSuper()) && isRestore([])
+            && counterDelta(postPath(resource.data.postId), 'commentCount', 1)
+            && getAfter(postPath(resource.data.postId)).data.lastCommentRef == 'comments/' + commentId)
+          // süper admin: gizle / göster
+          || (isSuper() && touches(['isHidden', 'hiddenBy', 'hiddenAt'])
+            && ((d().isHidden == true && d().hiddenBy == uid() && d().hiddenAt == request.time)
+                || (d().isHidden == false && d().hiddenBy == null && d().hiddenAt == null))));
+      allow delete: if false;
+    }
+
+    // ═════ 9 · events/{eventId} ═══════════════════════════════════════════════════════════════
+    function eventContentKeys() {
+      return ['title', 'desc', 'type', 'startsAt', 'endsAt', 'placeId', 'placeText', 'capacity', 'visibility',
+              'coverSeed', 'coverPalette', 'coverPattern', 'registrationOpen', 'autoReminder'];
+    }
+    function eventContentOk(eventId) {
+      return strBetween(d().title, 1, 80) && strMax(d().desc, 1000)                    // limit: eventTitleMax, eventDescMax
+          && d().startsAt is timestamp && d().endsAt is timestamp && d().endsAt > d().startsAt
+          && optStr(d().placeText, 120)                                                // limit: placeTextMax
+          && (d().capacity == null || (d().capacity is int && d().capacity >= 1))
+          && d().visibility in ['public', 'members'] && d().registrationOpen is bool && d().autoReminder is bool
+          && (d().coverPath == null || (d().coverPath is string && d().coverPath.matches('events/' + eventId + '/[^/]+')));
+    }
+    function rsvpBumpOk(e, eventId) {
+      let ref = d().lastRsvpRef;
+      return changed().hasOnly(['goingCount', 'waitlistCount', 'attendedCount', 'lastRsvpRef', 'updatedAt'])
+          && d().updatedAt == request.time
+          && ref is string && ref.matches('rsvps/' + eventId + '_[^/]+')
+          && rsvpPair(e, eventId, docPath(ref),
+                      d().goingCount - e.goingCount, d().waitlistCount - e.waitlistCount, d().attendedCount - e.attendedCount);
+    }
+    function rsvpPair(e, eventId, p, dg, dw, da) {
+      let r = getAfter(p).data;
+      let before = exists(p) ? get(p).data.status : 'none';
+      let own = r.userId == uid();
+      let mgr = isManager(e.clubId) || isSuper();
+      let cap = e.capacity;
+      return r.eventId == eventId && (
+          (dg == 1 && dw == 0 && da == 0 && r.status == 'going' && before in ['none', 'cancelled'] && own
+            && (cap == null || d().goingCount <= cap))
+          || (dg == 0 && dw == 1 && da == 0 && r.status == 'waitlist' && before in ['none', 'cancelled'] && own
+            && cap != null && e.goingCount >= cap)
+          || (dg == -1 && dw == 0 && da == 0 && before == 'going' && r.status == 'cancelled' && own)
+          || (dg == 0 && dw == -1 && da == 0 && before == 'waitlist' && r.status == 'cancelled' && own)
+          || (dg == 0 && dw == 0 && da == 1 && before == 'going' && r.status == 'attended' && mgr)
+          || (dg == 0 && dw == 0 && da == -1 && before == 'attended' && r.status == 'going' && mgr)
+          || (dg == 1 && dw == -1 && da == 0 && before == 'waitlist' && r.status == 'going' && mgr
+            && (cap == null || d().goingCount <= cap)));
+    }
+    match /events/{eventId} {
+      allow read: if isSuper()
+          || (signedIn() && seesMgmt(resource.data.clubId))
+          || (emailOk() && resource.data.isDeleted == false && resource.data.status in ['published', 'cancelled']
+              && (resource.data.visibility == 'public' || mActive(resource.data.clubId)));
+      allow create: if activeUser() && isManager(d().clubId) && d().createdBy == uid()
+          && get(clubPath(d().clubId)).data.status == 'active'
+          && d().keys().hasOnly(['clubId', 'createdBy', 'status', 'cancelReason', 'coverPath', 'goingCount', 'waitlistCount', 'attendedCount',
+                                 'lastRsvpRef', 'publishedAt', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'].concat(eventContentKeys()))
+          && eventContentOk(eventId) && d().coverPath == null && d().cancelReason == null
+          && d().goingCount == 0 && d().waitlistCount == 0 && d().attendedCount == 0 && d().lastRsvpRef == null && baseCreate()
+          && ((d().status == 'draft' && d().publishedAt == null)
+              || (d().status == 'published' && d().publishedAt == request.time && d().startsAt > request.time));
+      allow update: if d().clubId == resource.data.clubId && d().createdBy == resource.data.createdBy && (
+          // kayıt sayaçları (rsvp ile aynı batch)
+          rsvpBumpOk(resource.data, eventId)
+          // yönetici geçişleri
+          || (isManager(resource.data.clubId) && resource.data.isDeleted == false && (
+              // içerik düzenle (+ kapak)
+              (resource.data.status != 'cancelled' && touches(eventContentKeys().concat(['coverPath'])) && eventContentOk(eventId)
+                && (d().capacity == null || d().capacity >= resource.data.goingCount))
+              // yayınla
+              || (resource.data.status == 'draft' && d().status == 'published' && d().publishedAt == request.time
+                && d().startsAt > request.time && touches(['status', 'publishedAt']))
+              // yayından kaldır (kayıt yoksa)
+              || (resource.data.status == 'published' && d().status == 'draft' && d().publishedAt == null
+                && resource.data.goingCount == 0 && resource.data.waitlistCount == 0 && touches(['status', 'publishedAt']))
+              // iptal et
+              || (resource.data.status == 'published' && d().status == 'cancelled' && strBetween(d().cancelReason, 1, 300)  // limit: adminReasonMax
+                && d().registrationOpen == false && touches(['status', 'cancelReason', 'registrationOpen']))
+              // kayıt aç / kapat
+              || (resource.data.status == 'published' && touches(['registrationOpen']) && d().registrationOpen is bool)
+              // taslağı sil
+              || (resource.data.status == 'draft' && isSoftDelete([]))))
+          || (isManager(resource.data.clubId) && isRestore([])));
+      allow delete: if false;
+    }
+
+    // ═════ 10 · rsvps/{eventId}_{userId} ══════════════════════════════════════════════════════
+    function eventPath(e) { return /databases/$(database)/documents/events/$(e); }
+    function joinableEvent(ev) {
+      return ev.isDeleted == false && ev.status == 'published' && ev.registrationOpen == true && ev.endsAt > request.time
+          && (ev.visibility == 'public' || mActive(ev.clubId));
+    }
+    function rsvpTargetOk(rid) {
+      return ((d().status == 'going' && d().waitlistAt == null) || (d().status == 'waitlist' && d().waitlistAt == request.time))
+          && d().reminder in ['none', '15m', '1h', '1d']
+          && d().scannedAt == null && d().scannedBy == null
+          && getAfter(eventPath(d().eventId)).data.lastRsvpRef == 'rsvps/' + rid;
+    }
+    function attendWindow(ev) {                                                     // limit: attendanceWindowBefore (2 sa), attendanceWindowAfter (6 sa)
+      return request.time >= ev.startsAt - duration.value(2, 'h') && request.time <= ev.endsAt + duration.value(6, 'h');
+    }
+    match /rsvps/{rid} {
+      allow read: if signedIn() && (resource.data.userId == uid() || seesMgmt(resource.data.clubId)
+          // bekleme listesi sırası (count sorgusu)
+          || (emailOk() && resource.data.status == 'waitlist'));
+      allow create: if rid == d().eventId + '_' + d().userId && d().userId == uid() && activeUser()
+          && d().keys().hasOnly(['eventId', 'clubId', 'userId', 'ticketCode', 'status', 'reminder', 'waitlistAt', 'scannedAt', 'scannedBy',
+                                 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().clubId == get(eventPath(d().eventId)).data.clubId && joinableEvent(get(eventPath(d().eventId)).data)
+          && d().ticketCode is string && d().ticketCode.matches('GU-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}')
+          && rsvpTargetOk(rid) && baseCreate();
+      allow update: if d().eventId == resource.data.eventId && d().clubId == resource.data.clubId && d().userId == resource.data.userId
+          && d().ticketCode == resource.data.ticketCode && (
+          // sahibi: yeniden katıl
+          (resource.data.userId == uid() && activeUser() && resource.data.status == 'cancelled'
+            && touches(['status', 'reminder', 'waitlistAt', 'scannedAt', 'scannedBy'])
+            && joinableEvent(get(eventPath(resource.data.eventId)).data) && rsvpTargetOk(rid))
+          // sahibi: iptal (hesap silmede de kullanılır → activeUser istenmez)
+          || (resource.data.userId == uid() && resource.data.status in ['going', 'waitlist'] && d().status == 'cancelled'
+            && d().waitlistAt == null && touches(['status', 'waitlistAt'])
+            && getAfter(eventPath(resource.data.eventId)).data.lastRsvpRef == 'rsvps/' + rid)
+          // sahibi: hatırlatıcı
+          || (resource.data.userId == uid() && resource.data.status in ['going', 'waitlist']
+            && touches(['reminder']) && d().reminder in ['none', '15m', '1h', '1d'])
+          // yönetici: yoklama al / geri al (K-G penceresi)
+          || (isManager(resource.data.clubId) && attendWindow(get(eventPath(resource.data.eventId)).data)
+            && getAfter(eventPath(resource.data.eventId)).data.lastRsvpRef == 'rsvps/' + rid
+            && ((resource.data.status == 'going' && d().status == 'attended' && d().scannedAt == request.time && d().scannedBy == uid()
+                  && touches(['status', 'scannedAt', 'scannedBy']))
+                || (resource.data.status == 'attended' && d().status == 'going' && d().scannedAt == null && d().scannedBy == null
+                  && touches(['status', 'scannedAt', 'scannedBy']))))
+          // yönetici: bekleme listesinden al
+          || (isManager(resource.data.clubId) && resource.data.status == 'waitlist' && d().status == 'going' && d().waitlistAt == null
+            && touches(['status', 'waitlistAt']) && get(eventPath(resource.data.eventId)).data.status == 'published'
+            && getAfter(eventPath(resource.data.eventId)).data.lastRsvpRef == 'rsvps/' + rid));
+      allow delete: if false;
+    }
+
+    // ═════ 11 · notifications/{id} ════════════════════════════════════════════════════════════
+    // Alıcı listesi istemcide çözülür (fan-out); kural gönderenin yetkisini doğrular (parça başına ≤ 3 erişim).
+    function notifAuthority() {
+      let t = d().type;
+      let r = d().refs;
+      return (t == 'application_received' && r.applicantId == uid() && r.clubId is string
+                && get(mPath(r.clubId, uid())).data.status == 'pending')
+          || (t in ['application_approved', 'application_rejected', 'removed_from_club', 'role_changed', 'waitlist_promoted']
+                && r.clubId is string && (isManager(r.clubId) || isSuper()))
+          || (t == 'announcement' && r.clubId is string && isManager(r.clubId)
+                && getAfter(postPath(r.postId)).data.clubId == r.clubId)
+          || (t in ['event_new', 'event_cancelled'] && r.clubId is string && isManager(r.clubId)
+                && getAfter(eventPath(r.eventId)).data.clubId == r.clubId)
+          || (t == 'event_reminder' && d().userId == uid())
+          || (t in ['report_resolved', 'new_report', 'system'] && isSuper());
+    }
+    match /notifications/{nid} {
+      allow read: if signedIn() && resource.data.userId == uid();
+      allow create: if signedIn() && emailOk()
+          && d().keys().hasOnly(['userId', 'type', 'refs', 'read', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().userId is string && d().refs is map && d().read == false && baseCreate()
+          && nid.matches(d().type + '_.+_' + d().userId)
+          && notifAuthority();
+      allow update: if signedIn() && resource.data.userId == uid() && d().userId == resource.data.userId && (
+          (touches(['read']) && d().read is bool) || isSoftDelete([]) || isRestore([]));
+      allow delete: if false;
+    }
+
+    // ═════ 12 · reports/{reporterId}_{targetType}_{targetId} ═════════════════════════════════
+    match /reports/{reportId} {
+      // sahibi kendi bildirim kimliğini (var olmasa da) sorgulayabilir — "zaten bildirdin"
+      allow get: if isSuper() || (signedIn() && reportId.matches(uid() + '_(post|comment|user|club|event)_[^/]+'));
+      allow list: if isSuper();
+      allow create: if activeUser() && d().reporterId == uid()
+          && reportId == uid() + '_' + d().targetType + '_' + d().targetId
+          && d().keys().hasOnly(['targetType', 'targetId', 'targetClubId', 'reporterId', 'reason', 'note', 'status', 'action',
+                                 'resolvedAt', 'resolvedBy', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().targetType in ['post', 'comment', 'user', 'club', 'event'] && strBetween(d().targetId, 1, 128)
+          && (d().targetType != 'user' || d().targetId != uid())
+          && (d().targetClubId == null || d().targetClubId is string)
+          && d().reason in ['spam', 'harassment', 'inappropriate', 'misinformation', 'offtopic', 'other']
+          && strMax(d().note, 300)                                                     // limit: reportNoteMax
+          && d().status == 'open' && d().action == null && d().resolvedAt == null && d().resolvedBy == null && baseCreate();
+      allow update: if isSuper() && resource.data.status == 'open' && d().status == 'resolved'
+          && d().action in ['removed', 'dismissed', 'suspended'] && d().resolvedBy == uid() && d().resolvedAt == request.time
+          && touches(['status', 'action', 'resolvedAt', 'resolvedBy']);
+      allow delete: if false;
+    }
+
+    // ═════ 13 · activity/{id} ═════════════════════════════════════════════════════════════════
+    function activityAuthority(c) {
+      let k = d().kind;
+      return (k == 'application_received' && getAfter(mPath(c, uid())).data.status == 'pending')
+          || (k == 'member_joined' && getAfter(mPath(c, uid())).data.status == 'active')
+          || (k == 'member_left' && getAfter(mPath(c, uid())).data.status == 'left')
+          || (k in ['application_approved', 'application_rejected', 'member_removed', 'role_changed', 'event_published',
+                    'event_cancelled', 'post_created', 'announcement', 'poll', 'settings_changed']
+              && (isManager(c) || isSuper()));
+    }
+    match /activity/{aid} {
+      allow read: if signedIn() && seesMgmt(resource.data.clubId);
+      allow create: if emailOk() && d().actorId == uid() && d().createdAt == request.time
+          && d().keys().hasOnly(['clubId', 'actorId', 'kind', 'refs', 'createdAt']) && d().clubId is string && d().refs is map
+          && activityAuthority(d().clubId);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ═════ 14 · settings/{uid} ════════════════════════════════════════════════════════════════
+    function settingsKeys() {
+      return ['announcements', 'eventReminders', 'newEvents', 'applicationResults', 'management', 'system',
+              'reminderTime', 'quiet', 'quietFrom', 'quietTo', 'clubs', 'updatedAt'];
+    }
+    function settingsOk() {
+      return d().keys().hasOnly(settingsKeys()) && d().updatedAt == request.time
+          && d().get('reminderTime', '1h') in ['15m', '1h', '1d'] && d().get('clubs', {}) is map;
+    }
+    match /settings/{userId} {
+      allow read: if signedIn() && uid() == userId;
+      allow create, update: if signedIn() && uid() == userId && settingsOk();
+      allow delete: if false;
+    }
+
+    // ═════ 15 · blocks/{blockerId}_{blockedId} ════════════════════════════════════════════════
+    match /blocks/{bid} {
+      allow get: if signedIn() && bid.matches(uid() + '_[^/]+') && (resource == null || resource.data.blockerId == uid());
+      allow list: if signedIn() && resource.data.blockerId == uid();
+      allow create: if emailOk() && d().blockerId == uid() && bid == uid() + '_' + d().blockedId && d().blockedId != uid()
+          && d().keys().hasOnly(['blockerId', 'blockedId', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy']) && baseCreate();
+      allow update: if signedIn() && resource.data.blockerId == uid() && (isSoftDelete([]) || isRestore([]));
+      allow delete: if false;
+    }
+
+    // ═════ 16 · savedPosts/{userId}_{postId} ══════════════════════════════════════════════════
+    match /savedPosts/{sid} {
+      allow get: if signedIn() && sid.matches(uid() + '_[^/]+') && (resource == null || resource.data.userId == uid());
+      allow list: if signedIn() && resource.data.userId == uid();
+      allow create: if emailOk() && d().userId == uid() && sid == uid() + '_' + d().postId
+          && d().keys().hasOnly(['userId', 'postId', 'clubId', 'savedAt', 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().savedAt == request.time && get(postPath(d().postId)).data.clubId == d().clubId && baseCreate();
+      allow update: if signedIn() && resource.data.userId == uid()
+          && (isSoftDelete([]) || isRestore([]) || (isRestore(['savedAt']) && d().savedAt == request.time));
+      allow delete: if false;
+    }
+
+    // ═════ 17 · supportTickets/{id} ═══════════════════════════════════════════════════════════
+    match /supportTickets/{tid} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isSuper());
+      allow create: if emailOk() && d().userId == uid()
+          && d().keys().hasOnly(['ticketNo', 'userId', 'subject', 'message', 'attachmentPaths', 'status',
+                                 'createdAt', 'updatedAt', 'isDeleted', 'deletedAt', 'deletedBy'])
+          && d().ticketNo is string && d().ticketNo.matches('GU-[A-HJ-NP-Z2-9]{6}')
+          && d().subject in ['bug', 'suggestion', 'account', 'club', 'other']
+          && strBetween(d().message, 1, 500)                                           // limit: supportMessageMax
+          && d().attachmentPaths is list && d().attachmentPaths.size() <= 1            // limit: supportAttachmentsMax
+          && (d().attachmentPaths.size() == 0 || d().attachmentPaths[0].matches('support/' + d().ticketNo + '/[^/]+'))
+          && d().status == 'open' && baseCreate();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ═════ 18 · announcementCounters/{clubId}_{yyyyMMdd} ══════════════════════════════════════
+    function announceBumpOk(cid) {
+      let ref = d().lastPostRef;
+      let p = getAfter(docPath(ref)).data;
+      return d().keys().hasOnly(['clubId', 'day', 'count', 'lastPostRef', 'updatedAt']) && d().updatedAt == request.time
+          && isManager(d().clubId) && cid.split('_')[1] in dayKeys() && cid == d().clubId + '_' + cid.split('_')[1]
+          && d().count <= 2                                                            // limit: announcementDailyLimit
+          && ref is string && ref.matches('posts/[^/]+') && !exists(docPath(ref))
+          && p.clubId == d().clubId && p.type == 'announcement' && p.pushSent == true;
+    }
+    match /announcementCounters/{cid} {
+      allow get: if signedIn() && cid.matches('[^_/]+_[0-9]{8}') && seesMgmt(cid.split('_')[0]);
+      allow list: if false;
+      allow create: if d().count == 1 && announceBumpOk(cid);
+      allow update: if d().clubId == resource.data.clubId && d().count == resource.data.count + 1 && announceBumpOk(cid);
+      allow delete: if false;
+    }
+
+    // ── Koleksiyon grupları ─────────────────────────────────────────────────────────────────────
+    // collectionGroup('private') — ADM-05 e-posta araması, yalnızca süper admin.
+    match /{path=**}/private/{docId} {
+      allow read: if isSuper();
+    }
+  }
+}

@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// GÜ Kulüpler — Storage Rules (PLAN §11.5). Üzerine yazma ve silme yok; değiştirme = yeni dosya + Firestore alanı.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedInVerified() {
+      return request.auth != null && request.auth.token.email_verified == true
+          && request.auth.token.email.lower().matches('.*@(ogr\\.gumushane\\.edu\\.tr|gumushane\\.edu\\.tr)');
+    }
+    function isSuperAdmin() { return request.auth != null && request.auth.token.get('superadmin', false) == true; }
+    function imageOk() {
+      return request.resource.contentType.matches('image/.*')
+          && request.resource.size < 5 * 1024 * 1024;                              // limit: imageMaxBytes
+    }
+    function membershipPath(clubId) {
+      return /databases/(default)/documents/memberships/$(clubId + '_' + request.auth.uid);
+    }
+    function isManagerOf(clubId) {
+      return firestore.exists(membershipPath(clubId))
+          && firestore.get(membershipPath(clubId)).data.status == 'active'
+          && firestore.get(membershipPath(clubId)).data.role in ['board', 'president'];
+    }
+    function eventClubId(eventId) {
+      return firestore.get(/databases/(default)/documents/events/$(eventId)).data.clubId;
+    }
+
+    match /users/{uid}/{file} {
+      allow read: if signedInVerified();
+      allow create: if resource == null && request.auth != null && request.auth.uid == uid && signedInVerified() && imageOk();
+      allow update, delete: if false;
+    }
+    match /clubs/{clubId}/{file} {
+      allow read: if signedInVerified();
+      allow create: if resource == null && signedInVerified() && imageOk() && (isManagerOf(clubId) || isSuperAdmin());
+      allow update, delete: if false;
+    }
+    match /events/{eventId}/{file} {
+      allow read: if signedInVerified();
+      allow create: if resource == null && signedInVerified() && imageOk() && isManagerOf(eventClubId(eventId));
+      allow update, delete: if false;
+    }
+    match /posts/{postId}/{file} {
+      allow read: if signedInVerified();
+      allow create: if resource == null && signedInVerified() && imageOk()
+          && request.resource.metadata.clubId is string
+          && isManagerOf(request.resource.metadata.clubId);
+      allow update, delete: if false;
+    }
+    match /support/{ticketNo}/{file} {
+      allow read: if isSuperAdmin();
+      allow create: if resource == null && signedInVerified() && imageOk() && ticketNo.matches('GU-[A-HJ-NP-Z2-9]{6}');
+      allow update, delete: if false;
+    }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}
