@@ -42,6 +42,8 @@ Mevcut hiçbir Flutter dalı değiştirilmedi. Flutter deposunun kural testleri 
 firebase deploy --only firestore:rules,firestore:indexes,storage --project gu-kulupler
 ```
 
+> ⚠️ **Kuralları güncellerken `WEB-EK` bölümlerini koruyun.** Flutter `firebase/firestore.rules` / `storage.rules` dosyalarını güncellerken bu depodaki `WEB-EK` işaretli bölümleri silmeyin ya da değiştirmeyin; web'in yönetim ve admin ekranları bunlara dayanır. Bulmak için: `grep -n "WEB-EK" firebase/*.rules`. Eklenen fonksiyonlar ve `allow` satırlarına eklenen `||` dalları: kulüp (`canBumpManagedMemberCount`, `canEditSettings`, `canTransferPresidency`, `canAdminClub`, `canCreateClub`, `clubs/{id}/private/counter` bloğu), üyelik (`canApprove` … `canDropAdvisorAsSuper`, `canCreateAsSuper`, `canCreateContactAsSuper`), kullanıcı (`canSetStatusAsSuper`, `canSetSuspendReason`), bildirim (`mgmtKindOk`), şikayet (`canResolveReport`), günlük (`canLogManagement`, `canLogSettings`), `collectionGroup('private')` listesi ve Storage `clubs/` yüklemesi. T-30 / T-37 bu işlemleri farklı biçimde tanımlarsa web veri katmanı da aynı commit'te güncellenmelidir — değişikliği yüklemeden önce web'in `npm run e2e -- --reset` ve `npm run test:rules` komutlarıyla deneyin.
+>
 > Web deposundan kural yüklemek Flutter kurallarının üzerine yazar. Bu yüzden yüklemeyi iki ekip anlaştıktan sonra **tek bir yerden** yapın.
 
 ## 3. Siteyi yayınla
