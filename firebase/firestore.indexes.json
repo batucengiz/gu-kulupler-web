@@ -183,6 +183,54 @@
       ]
     },
     {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "clubId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isDeleted",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startsAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "clubId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "visibility",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isDeleted",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startsAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "rsvps",
       "queryScope": "COLLECTION",
       "fields": [
@@ -273,20 +321,6 @@
       ]
     },
     {
-      "collectionGroup": "activity",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "kind",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "reports",
       "queryScope": "COLLECTION",
       "fields": [
@@ -319,6 +353,20 @@
       ]
     },
     {
+      "collectionGroup": "blocks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "blockerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isDeleted",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "savedPosts",
       "queryScope": "COLLECTION",
       "fields": [
@@ -333,20 +381,6 @@
         {
           "fieldPath": "savedAt",
           "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "blocks",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "blockerId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "isDeleted",
-          "order": "ASCENDING"
         }
       ]
     },
@@ -393,27 +427,15 @@
       ]
     },
     {
-      "collectionGroup": "events",
+      "collectionGroup": "activity",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "clubId",
+          "fieldPath": "kind",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "visibility",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "status",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "isDeleted",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "startsAt",
+          "fieldPath": "createdAt",
           "order": "DESCENDING"
         }
       ]

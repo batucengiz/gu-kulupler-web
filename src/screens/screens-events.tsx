@@ -304,7 +304,6 @@ S['EVT-02'] = {
     useLoader(ev && isMgr ? LD.participantsLoader(ev.id, ev.clubId) : null);
     const myR = ev ? sel().myRsvp(ev.id, u) : null;
     useEffect(() => {
-      if (myR && myR.status === 'waitlist') A.loadWaitPosition(myR.eventId).catch(() => {});
     }, [myR && myR.status, myR && myR.waitlistAt]);
     useEffect(() => {
       if (ev && ev.status === 'cancelled' && myR && !shownCancelled.has(ev.id)) {
@@ -414,16 +413,18 @@ S['EVT-02'] = {
       if (st === 'going')
         return (
           <StickyCTA>
-            <Button
-              variant="text"
-              label={t('event.cta.leave')}
-              action="EVT-02.leave"
-              onClick={() =>
-                app.openDialog('DLG-14', {
-                  eventId: ev.id,
-                })
-              }
-            />
+            {sel().myRsvp(ev.id)?.status !== 'attended' && (
+              <Button
+                variant="text"
+                label={t('event.cta.leave')}
+                action="EVT-02.leave"
+                onClick={() =>
+                  app.openDialog('DLG-14', {
+                    eventId: ev.id,
+                  })
+                }
+              />
+            )}
             <Button
               icon="ticket"
               label={t('event.cta.ticket')}
@@ -441,9 +442,7 @@ S['EVT-02'] = {
           <StickyCTA>
             <div className="flex1 col">
               <span className="t-label-l c-heading">
-                {t('event.waitlistPos', {
-                  n: sel().waitPosition(ev.id, u),
-                })}
+                {sel().waitPosition(ev.id, u) ? t('event.waitlistPos', { n: sel().waitPosition(ev.id, u) }) : t('web.waitlistIn')}
               </span>
               <span className="t-caption">{t('event.waitlistNote')}</span>
             </div>
@@ -922,7 +921,6 @@ S['EVT-04'] = {
     const { status, reload } = useLoader(LD.myEventsLoader());
     const all = sel().userRsvps(u).filter((r) => r.status !== 'cancelled' && !r.event.isDeleted);
     useEffect(() => {
-      if (tab === 'waitlist') all.filter((r) => r.status === 'waitlist').forEach((r) => A.loadWaitPosition(r.eventId).catch(() => {}));
       // eslint-disable-next-line
     }, [tab, all.length]);
     const list = all
@@ -1019,9 +1017,7 @@ S['EVT-04'] = {
                         ) : tab === 'waitlist' ? (
                           <>
                             <span className="t-caption tnum">
-                              {t('event.waitlistPos', {
-                                n: sel().waitPosition(ev.id, u),
-                              })}
+                              {sel().waitPosition(ev.id, u) ? t('event.waitlistPos', { n: sel().waitPosition(ev.id, u) }) : t('web.waitlistIn')}
                             </span>
                             <IconButton
                               icon="x"

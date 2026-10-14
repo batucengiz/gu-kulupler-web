@@ -13,7 +13,7 @@ export function openManage(clubId?: string | null) {
 }
 
 export function openNotification(n: AppNotification) {
-  if (!n.read) A.markRead(n, true).catch(handleError);
+  if (!n.read) A.markRead(n).catch(handleError);
   const r = n.refs || {}; const nav = app.nav; const u = session.s.uid;
   switch (n.type) {
     case 'application_received':

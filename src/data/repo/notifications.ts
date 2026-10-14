@@ -1,4 +1,4 @@
-import { onSnapshot, query, where, orderBy, limit, updateDoc, writeBatch, setDoc, type WriteBatch, type Transaction } from 'firebase/firestore';
+import { onSnapshot, query, where, orderBy, limit, updateDoc, writeBatch, setDoc, getDoc, type WriteBatch, type Transaction } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { C, col, ref, ids } from '../db';
 import { fromQuery, baseCreate, softDeletePayload, restorePayload, touch } from '../fs';
@@ -12,7 +12,8 @@ export function watchInbox(uid: string, cb: (items: AppNotification[]) => void, 
     (qs) => cb(fromQuery<AppNotification>(qs)), (e) => { console.warn('bildirim akışı', e); onErr?.(e); },
   );
 }
-export const markRead = (id: string, read = true) => updateDoc(ref(C.notifications, id), { read, ...touch() });
+/** Okundu: yalnızca `read: true` (+ updatedAt). Okunmamışa dönüş kuralda yoktur. */
+export const markRead = (id: string) => updateDoc(ref(C.notifications, id), { read: true, ...touch() });
 export async function markAllRead(unreadIds: string[]) {
   for (const part of chunk(unreadIds, LIMITS.batchMaxWrites)) {
     const b = writeBatch(db); part.forEach((id) => b.update(ref(C.notifications, id), { read: true, ...touch() })); await b.commit();
@@ -21,28 +22,36 @@ export async function markAllRead(unreadIds: string[]) {
 export const softDeleteNotification = (id: string, actorId: string) => updateDoc(ref(C.notifications, id), softDeletePayload(actorId));
 export const restoreNotification = (id: string) => updateDoc(ref(C.notifications, id), restorePayload());
 
-/** Bildirim belge kimliği: `${type}_${refId}_${userId}`; tekrar edebilen türlerde refId olay damgası taşır (W-49). */
-const REPEATABLE = new Set(['application_received', 'application_approved', 'application_rejected', 'removed_from_club', 'role_changed', 'waitlist_promoted', 'report_resolved']);
-function refIdOf(type: string, refs: NotificationRefs): string {
-  const base = type === 'announcement' ? refs.postId
-    : ['event_new', 'event_reminder', 'event_cancelled', 'waitlist_promoted'].includes(type) ? refs.eventId
-    : type === 'application_received' ? `${refs.clubId}-${refs.applicantId}`
-    : type === 'report_resolved' || type === 'new_report' ? refs.reportId
-    : type === 'system' ? refs.textKey : refs.clubId;
-  return REPEATABLE.has(type) ? `${base}-${Date.now().toString(36)}` : String(base);
+/** NotificationWriter.newEventKey — olay başına 20 karakterlik rastgele anahtar ([A-Za-z0-9]). */
+const KEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+export function newEventKey() {
+  const buf = new Uint32Array(20); crypto.getRandomValues(buf);
+  return Array.from(buf, (x) => KEY_ALPHABET[x % KEY_ALPHABET.length]).join('');
+}
+/**
+ * Olay anahtarı (W-49, CD-148): tek seferlik olaylarda olayın kimliği (duyuru → postId, iptal → eventId,
+ * başvuru → {clubId}_{applicantId}_{priorCount}, hatırlatıcı → eventId); diğerlerinde olay başına rastgele.
+ */
+export function eventKeyOf(type: string, refs: NotificationRefs, extra?: { priorCount?: number }): string {
+  if (type === 'announcement') return String(refs.postId);
+  if (type === 'event_cancelled' || type === 'event_reminder') return String(refs.eventId);
+  if (type === 'application_received') return `${refs.clubId}_${refs.applicantId}_${extra?.priorCount ?? 0}`;
+  return newEventKey();
 }
 export interface NotificationDraft { type: string; refs: NotificationRefs }
-const payload = (d: NotificationDraft, userId: string) => ({ userId, type: d.type, refs: d.refs, read: false, ...baseCreate() });
+/** Yalnızca tanımlı refs anahtarları yazılır (W-51: null alanın anahtarı yok). */
+const cleanRefs = (refs: NotificationRefs) => Object.fromEntries(Object.entries(refs).filter(([, v]) => v != null && v !== ''));
+const payload = (d: NotificationDraft, userId: string) => ({ userId, type: d.type, refs: cleanRefs(d.refs), read: false, ...baseCreate() });
 /** NotificationRepository.addToBatch — tek alıcı, kritik batch/transaction içinde. */
-export function addNotification(w: WriteBatch | Transaction, d: NotificationDraft, recipientId: string) {
-  (w as WriteBatch).set(ref(C.notifications, ids.notification(d.type, refIdOf(d.type, d.refs), recipientId)), payload(d, recipientId));
+export function addNotification(w: WriteBatch | Transaction, d: NotificationDraft, recipientId: string, key: string = eventKeyOf(d.type, d.refs)) {
+  (w as WriteBatch).set(ref(C.notifications, ids.notification(d.type, key, recipientId)), payload(d, recipientId));
 }
 /** ClientFanOutDispatcher: parçalı (50) batch, aborted/unavailable için geri çekilmeli yeniden deneme. Hata kullanıcıya gösterilmez. */
-export async function fanOut(d: NotificationDraft, recipients: string[], excludeUserId?: string): Promise<{ requested: number; written: number; failedChunks: number }> {
+export async function fanOut(d: NotificationDraft, recipients: string[], excludeUserId?: string, opts: { key?: string; chunkSize?: number } = {}): Promise<{ requested: number; written: number; failedChunks: number }> {
   const list = uniq(recipients).filter((u) => u && u !== excludeUserId);
   let written = 0; let failedChunks = 0;
-  const refId = refIdOf(d.type, d.refs);
-  for (const part of chunk(list, LIMITS.notificationFanOutChunkSize)) {
+  const refId = opts.key ?? eventKeyOf(d.type, d.refs);
+  for (const part of chunk(list, opts.chunkSize ?? LIMITS.notificationFanOutChunkSize)) {
     let ok = false;
     for (const wait of [0, 250, 500, 1000]) {
       if (wait) await sleep(wait);
@@ -60,9 +69,11 @@ export async function fanOut(d: NotificationDraft, recipients: string[], exclude
   if (failedChunks) console.warn(`[fan-out] ${d.type}: ${failedChunks} parça yazılamadı`);
   return { requested: list.length, written, failedChunks };
 }
-/** CD-44: cihaz kendi event_reminder belgesini yazar (idempotent kimlik). */
+/** CD-44: cihaz kendi event_reminder belgesini yazar; önce okur, belge varsa (silinmiş olsa da) yazmaz. */
 export async function createSelfReminder(uid: string, eventId: string, clubId: string) {
   try {
-    await setDoc(ref(C.notifications, ids.notification('event_reminder', eventId, uid)), payload({ type: 'event_reminder', refs: { eventId, clubId } }, uid));
-  } catch { /* zaten var ya da izin yok: best-effort */ }
+    const r = ref(C.notifications, ids.notification('event_reminder', eventId, uid));
+    if ((await getDoc(r)).exists()) return;
+    await setDoc(r, payload({ type: 'event_reminder', refs: { clubId, eventId } }, uid));
+  } catch { /* izin yok: best-effort */ }
 }

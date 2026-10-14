@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --dir src",
     "gen": "node scripts/gen-i18n.mjs && node scripts/gen-icons.mjs",
     "emulators": "firebase emulators:start --only auth,firestore,storage --project demo-gu-kulupler",
     "seed": "node scripts/seed.mjs",

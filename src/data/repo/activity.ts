@@ -5,10 +5,12 @@ import { fromQuery, now } from '../fs';
 import type { Activity } from '../models';
 import { LIMITS, kindsOfCategory } from '../../lib/constants';
 
-export interface ActivityDraft { clubId: string; actorId: string; kind: string; refs?: Record<string, string> }
+export interface ActivityDraft { clubId: string; actorId: string; kind: string; refs?: Record<string, string>; id?: string }
+/** FirestoreIds.activity / postActivity / eventActivity — sabit kimlik: bir geçişe tek günlük kaydı (CD-137 madde 8t). */
+export const activityId = (clubId: string, actorId: string, kind: string, key: string | number) => `${clubId}_${actorId}_${kind}_${key}`;
 /** ActivityRepository.addToBatch — iş yazımıyla aynı batch/transaction. */
 export function addActivity(w: WriteBatch | Transaction, a: ActivityDraft) {
-  const r = doc(collection(db, C.activity));
+  const r = a.id ? doc(db, C.activity, a.id) : doc(collection(db, C.activity));
   (w as WriteBatch).set(r, { clubId: a.clubId, actorId: a.actorId, kind: a.kind, refs: a.refs || {}, createdAt: now() });
 }
 export async function listActivity(clubId: string, category: string | null, cursor?: QueryDocumentSnapshot<DocumentData> | null): Promise<Page<Activity>> {

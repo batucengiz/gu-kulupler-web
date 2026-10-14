@@ -4,7 +4,7 @@ import { db } from '../../lib/firebase';
 import { C, col, ref, type Page } from '../db';
 import { fromDoc, fromQuery, baseCreate, touch, now, softDeletePayload, restorePayload, AppError } from '../fs';
 import type { ClubEvent, Club, Rsvp } from '../models';
-import { addActivity } from './activity';
+import { addActivity, activityId } from './activity';
 import { fanOut } from './notifications';
 import { listAllActive } from './memberships';
 import { listByInterests } from './users';
@@ -18,22 +18,25 @@ export interface EventDraft {
 }
 const eRef = (id: string) => ref(C.events, id);
 export const newEventId = () => doc(collection(db, C.events)).id;
+/** İçerik dalının alanları (coverSeed hariç: oluşturmada `event-{id}` olarak sabitlenir, sonra değişmez). */
 const content = (d: EventDraft) => ({
   title: d.title.trim(), desc: d.desc.trim(), type: d.type, startsAt: Timestamp.fromMillis(d.startsAt), endsAt: Timestamp.fromMillis(d.endsAt),
   placeId: d.placeId || null, placeText: d.placeId ? null : (d.placeText || '').trim() || null, capacity: d.capacity ?? null, visibility: d.visibility,
-  coverSeed: d.coverSeed, coverPalette: d.coverPalette, coverPattern: d.coverPattern, registrationOpen: d.registrationOpen, autoReminder: d.autoReminder,
+  coverPalette: d.coverPalette, coverPattern: d.coverPattern, registrationOpen: d.registrationOpen, autoReminder: d.autoReminder,
 });
+/** null alanların anahtarı yazılmaz (W-51) — oluşturma yükü için. */
+const withoutNulls = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null));
 
-/** B: events set (+ yayınlanıyorsa activity). Kapak yüklemesi sonra `update(coverPath)` ile (CD-47). */
+/** B: events set (+ yayınlanıyorsa günlük, sabit kimlik). Kapak yüklemesi sonra `update(coverPath)` ile (CD-47). */
 export async function createEvent(d: EventDraft, p: { clubId: string; createdBy: string; status: 'draft' | 'published'; eventId?: string }): Promise<string> {
   if (p.status === 'published' && d.startsAt <= Date.now()) throw new AppError('eventEnded');
   const r = p.eventId ? eRef(p.eventId) : doc(collection(db, C.events));
   const b = writeBatch(db);
   b.set(r, {
-    clubId: p.clubId, createdBy: p.createdBy, ...content(d), status: p.status, cancelReason: null, coverPath: null,
-    goingCount: 0, waitlistCount: 0, attendedCount: 0, lastRsvpRef: null, publishedAt: p.status === 'published' ? now() : null, ...baseCreate(),
+    clubId: p.clubId, createdBy: p.createdBy, ...withoutNulls(content(d)), status: p.status, coverSeed: `event-${r.id}`,
+    goingCount: 0, waitlistCount: 0, attendedCount: 0, ...baseCreate(), ...(p.status === 'published' ? { publishedAt: now() } : {}),
   });
-  if (p.status === 'published') addActivity(b, { clubId: p.clubId, actorId: p.createdBy, kind: 'event_published', refs: { eventId: r.id } });
+  if (p.status === 'published') addActivity(b, { clubId: p.clubId, actorId: p.createdBy, kind: 'event_published', refs: { eventId: r.id }, id: activityId(p.clubId, p.createdBy, 'event_published', r.id) });
   await b.commit();
   return r.id;
 }
@@ -59,7 +62,8 @@ export async function publish(eventId: string, actorId: string) {
     if (!e || e.isDeleted || e.status !== 'draft') throw new AppError('conflict');
     if (e.startsAt <= Date.now()) throw new AppError('eventEnded');
     tx.update(eRef(eventId), { status: 'published', publishedAt: now(), ...touch() });
-    addActivity(tx, { clubId: e.clubId, actorId, kind: 'event_published', refs: { eventId } });
+    // yalnızca ilk yayın günlüğe düşer (sabit kimlik)
+    if (!e.publishedAt) addActivity(tx, { clubId: e.clubId, actorId, kind: 'event_published', refs: { eventId }, id: activityId(e.clubId, actorId, 'event_published', eventId) });
   });
 }
 /** RecipientResolver.eventNew — üyeler (yayıncı + danışman hariç) ∪ public ise ilgi eşleşmeli ≤ 200. */
@@ -87,8 +91,9 @@ export async function unpublish(eventId: string) {
   await runTransaction(db, async (tx) => {
     const e = fromDoc<ClubEvent>(await tx.get(eRef(eventId)));
     if (!e || e.status !== 'published') throw new AppError('conflict');
-    if (e.goingCount !== 0 || e.waitlistCount !== 0) throw new AppError('eventHasRegistrations');
-    tx.update(eRef(eventId), { status: 'draft', publishedAt: null, ...touch() });
+    // K-F: kayıtlı varken taslağa alınamaz; bekleme listesi engel değil, publishedAt korunur
+    if (e.goingCount !== 0) throw new AppError('eventHasRegistrations');
+    tx.update(eRef(eventId), { status: 'draft', ...touch() });
   });
 }
 /** Tx: published → cancelled + activity; sonra going+waitlist fan-out (force). */
@@ -99,8 +104,8 @@ export async function cancelEvent(eventId: string, reason: string, actorId: stri
     const e = fromDoc<ClubEvent>(await tx.get(eRef(eventId)));
     if (!e || e.status !== 'published') throw new AppError('conflict');
     clubId = e.clubId;
-    tx.update(eRef(eventId), { status: 'cancelled', cancelReason: reason.trim(), registrationOpen: false, ...touch() });
-    addActivity(tx, { clubId: e.clubId, actorId, kind: 'event_cancelled', refs: { eventId } });
+    tx.update(eRef(eventId), { status: 'cancelled', cancelReason: reason.trim(), ...touch() });
+    addActivity(tx, { clubId: e.clubId, actorId, kind: 'event_cancelled', refs: { eventId }, id: activityId(e.clubId, actorId, 'event_cancelled', eventId) });
   });
   try {
     const qs = await getDocs(query(col(C.rsvps), where('eventId', '==', eventId), where('clubId', '==', clubId), where('status', 'in', ['going', 'waitlist'])));

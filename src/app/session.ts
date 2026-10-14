@@ -8,7 +8,7 @@ import type { User, Settings, Membership, AppNotification, Rsvp } from '../data/
 import { DEFAULT_SETTINGS } from '../data/models';
 import { getUser, createProfile, touchLastLogin, ensureAccountDoc, userCache } from '../data/repo/users';
 import { getSettings } from '../data/repo/settings';
-import { watchMyMemberships } from '../data/repo/memberships';
+import { watchMyMemberships, withNotes } from '../data/repo/memberships';
 import { watchInbox } from '../data/repo/notifications';
 import { fetchActiveBlocks } from '../data/repo/blocks';
 import { listAllSavedIds } from '../data/repo/saved';
@@ -109,8 +109,13 @@ class Session extends Emitter {
     this.stopListeners();
     void touchLastLogin(uid).catch(() => ensureAccountDoc(uid, email).catch(() => undefined));
     this.unsubs.push(watchMyMemberships(uid, (list) => {
-      const map: Record<string, Membership> = {}; list.forEach((m) => { map[m.clubId] = m; });
+      const prev = this.s.memberships;
+      const map: Record<string, Membership> = {};
+      // başvuru notu private/contact'tadır: önceki okumayı koru, bekleyen başvuruların notunu ayrıca oku
+      list.forEach((m) => { map[m.clubId] = prev[m.clubId] && prev[m.clubId].note != null && prev[m.clubId].appliedAt === m.appliedAt ? { ...m, note: prev[m.clubId].note } : m; });
       this.patch({ memberships: map, membershipsLoaded: true, listenerError: false });
+      const need = list.filter((m) => m.status === 'pending' && map[m.clubId].note == null);
+      if (need.length) void withNotes(need).then((xs) => { const cur = { ...this.s.memberships }; xs.forEach((x) => { if (cur[x.clubId]?.status === 'pending') cur[x.clubId] = { ...cur[x.clubId], note: x.note }; }); this.patch({ memberships: cur }); }).catch(() => undefined);
     }, () => this.patch({ listenerError: true, membershipsLoaded: true })));
     let firstInbox = true;
     this.unsubs.push(watchInbox(uid, (items) => {

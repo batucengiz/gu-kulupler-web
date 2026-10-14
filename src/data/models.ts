@@ -22,7 +22,9 @@ export type MembershipStatus = 'pending' | 'active' | 'rejected' | 'removed' | '
 export type ClubRole = 'member' | 'board' | 'president' | 'advisor';
 export interface Applicant { name: string; department: string | null; year: string | null; avatarSeed: string }
 export interface Membership extends Base {
-  id: string; clubId: string; userId: string; status: MembershipStatus; role: ClubRole; note: string;
+  id: string; clubId: string; userId: string; status: MembershipStatus; role: ClubRole;
+  /** İstemci zenginleştirmesi: başvuru notu private/contact'tan okunur (belgede yok — CD-137). */
+  note?: string;
   applicant: Applicant; appliedAt: Ms; decidedAt: Ms | null; decidedBy: string | null; retryAfter: Ms | null;
   rejectReason: string | null; rejectNote: string | null; priorCount: number;
 }

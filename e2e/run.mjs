@@ -193,7 +193,7 @@ scenario('öğrenci: başvur → not düzenle → geri çek', async () => {
     await c.step('başvurum', () => c.go('/clubs/c02/application'));
     await c.step('notu düzenle', async () => {
       if (await c.has('CLB-05.note', 3000)) { await c.fill('CLB-05.note', 'Güncellenmiş not.'); await c.click('CLB-05.saveNote'); await c.p.waitForTimeout(1200);
-        assert((await fsGet('memberships/c02_u_ayse')).note === 'Güncellenmiş not.', 'not güncellenmedi'); }
+        assert((await fsGet('memberships/c02_u_ayse/private/contact')).note === 'Güncellenmiş not.', 'not güncellenmedi'); }
     });
     await c.step('geri çek', async () => {
       await c.go('/clubs/c02/application');

@@ -20,5 +20,7 @@ export const ids = {
 };
 export const accountRef = (uid: string) => doc(db, C.users, uid, 'private', 'account');
 export const contactRef = (mid: string) => doc(db, C.memberships, mid, 'private', 'contact');
+/** Yönetici memberCount geçişlerinin işaretçisi (yalnızca seesMgmt okur; herkese açık kulüp belgesine üyelik yolu yazılmaz — CD-137 8q). */
+export const clubCounterRef = (clubId: string) => doc(db, C.clubs, clubId, 'private', 'counter');
 
 export interface Page<T> { items: T[]; cursor: QueryDocumentSnapshot<DocumentData> | null; hasMore: boolean }

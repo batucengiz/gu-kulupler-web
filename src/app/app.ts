@@ -43,6 +43,17 @@ export function handleError(e: unknown): void {
     'resource-exhausted': () => ui.showToast('TST-X40', { text: t('web.err.tooMany') }),
     requiresRecentLogin: () => ui.showToast('TST-X40', { text: t('web.err.recentLogin') }),
     retryCooldown: () => ui.showToast('TST-X40', { text: t('web.err.generic') }),
+    alreadyAttended: () => ui.showToast('TST-X40', { text: t('web.err.alreadyAttended') }),
+    alreadyMember: () => ui.showToast('TST-X40', { text: t('web.err.alreadyMember') }),
+    notMember: () => ui.showToast('TST-X40', { text: t('web.err.notMember') }),
+    approvalRequired: () => ui.showToast('TST-X40', { text: t('web.err.approvalRequired') }),
+    reapplyNeedsReview: () => ui.showToast('TST-X40', { text: t('web.err.reapplyNeedsReview') }),
+    noteRequired: () => ui.showToast('TST-X40', { text: t('web.err.noteRequired') }),
+    onlyDraftDeletable: () => ui.showToast('TST-X40', { text: t('web.err.onlyDraftDeletable') }),
+    cannotRemove: () => ui.showToast('TST-X40', { text: t('web.err.cannotRemove') }),
+    cannotChangeRole: () => ui.showToast('TST-X40', { text: t('web.err.cannotChangeRole') }),
+    notSignedIn: () => ui.showToast('TST-X40', { text: t('web.err.signIn') }),
+    unauthenticated: () => ui.showToast('TST-X40', { text: t('web.err.signIn') }),
   };
   (map[code] || (() => ui.showToast('TST-X40', { text: t('web.err.generic') })))();
   if (!map[code]) console.error(e);

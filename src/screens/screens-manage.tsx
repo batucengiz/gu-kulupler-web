@@ -738,7 +738,7 @@ S['MGT-03'] = {
       );
     const exportCsv = () =>
       runExport(async () => {
-      const emails = await Promise.all(list.map((m) => M.readContact(club.id, m.userId).catch(() => null)));
+      const emails = await Promise.all(list.map((m) => M.readContact(club.id, m.userId).then((c) => c?.email || null)));
       const rows = [['ad', 'eposta', 'bolum', 'sinif', 'rol', 'katilim_tarihi']].concat(
         list.map((m, i) => [
           m.user.name,
@@ -1007,6 +1007,7 @@ S['MGT-05'] = {
     const { u, club, readOnly, allowed, loading } = useMgt(params);
     const editing = params.eventId ? sel().event(params.eventId) : null;
     const [busy, run] = useBusy();
+    const createdId = useRef<string | null>(null);
     const evLoad = useLoader(params.eventId ? LD.eventLoader(params.eventId) : null);
     if (params.eventId && !editing) {
       if (evLoad.status === 'error') return <NotFoundInline />;
@@ -1127,11 +1128,12 @@ S['MGT-05'] = {
       registrationOpen: f.registrationOpen !== false,
     });
     void u;
+    const onCreated = (id: string) => { createdId.current = id; };
     const coverOpts = () => ({ cover: f.cover.file || null, clearCover: !f.cover.file && !f.cover.path && !!(editing && editing.coverPath) });
     const saveDraft = () =>
       run(async () => {
         if (!app.guard(club.id)) return;
-        await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : null, ...coverOpts() });
+        await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : createdId.current, onCreated, ...coverOpts() });
         reset();
         app.toast('TST-13');
         app.nav.popTo('MGT-04') ||
@@ -1153,7 +1155,7 @@ S['MGT-05'] = {
         count: Math.max(0, club.memberCount - 1),
         onConfirm: (notifyMembers: boolean) =>
           run(async () => {
-            const id = await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : null, publish: true, notify: notifyMembers, ...coverOpts() });
+            const id = await A.saveEvent(payload() as any, { clubId: club.id, eventId: editing ? editing.id : createdId.current, onCreated, publish: true, notify: notifyMembers, ...coverOpts() });
             app.closeDialog();
             reset();
             app.nav.popTo('MGT-04') ||
@@ -1654,7 +1656,7 @@ S['MGT-06'] = {
     };
     const exportCsv = () =>
       runExport(async () => {
-        const emails = await Promise.all(rs.map((r) => M.readContact(club.id, r.userId).catch(() => null)));
+        const emails = await Promise.all(rs.map((r) => M.readContact(club.id, r.userId).then((c) => c?.email || null)));
         downloadText(
           '\ufeff' +
             [['ad', 'eposta', 'durum', 'bilet', 'okutma']]
@@ -1854,8 +1856,12 @@ S['MGT-06'] = {
                 kind: 'attendance',
                 count: reg.length,
                 onConfirm: async () => {
-                  await A.markAllAttended(ev);
+                  const r = await A.markAllAttended(ev);
                   app.closeDialog();
+                  if (r.conflicted || r.failed) {
+                    app.toast('TST-X40', { text: t('web.bulk.partial', { ok: r.succeeded, total: r.succeeded + r.conflicted + r.failed }) });
+                    return;
+                  }
                   app.toast('TST-31', {
                     name: t('attendance.allRegistered'),
                   });
@@ -2484,7 +2490,7 @@ S['MGT-09'] = {
         let coverPath: string | null = f.cover.path || null;
         if (f.cover.file) {
           const { prepareImage, upload, StoragePaths } = await import('../data/repo/storage');
-          coverPath = await upload(StoragePaths.club(club.id), await prepareImage(f.cover.file, 1600));
+          coverPath = await upload(StoragePaths.club(club.id), await prepareImage(f.cover.file, 1600), { clubId: club.id });
         }
         await A.updateClubSettings(club.id, {
           summary: f.summary.trim(),

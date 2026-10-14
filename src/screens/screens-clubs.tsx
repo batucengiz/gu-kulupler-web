@@ -1217,7 +1217,10 @@ S['CLB-05'] = {
     const u = app.uid();
     const club = sel().club(params.id);
     const m = sel().membership(params.id, u);
-    const [note, setNote] = useState(m ? m.note : '');
+    const [note, setNote] = useState(m?.note ?? '');
+    // not private/contact'tan sonradan gelir: kullanıcı yazmaya başlamadıysa alanı doldur
+    const noteSeen = useRef(m?.note != null);
+    useEffect(() => { if (!noteSeen.current && m?.note != null) { noteSeen.current = true; setNote(m.note); } }, [m?.note]);
     const [busy, run] = useBusy();
     if (!club) return <NotFoundInline />;
     const st0 = m ? m.status : 'none';

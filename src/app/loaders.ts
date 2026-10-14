@@ -53,7 +53,8 @@ export const allMembersLoader = (clubId: string) =>
 export const appsLoader = (clubId: string) =>
   L(`apps:${clubId}`, async () => {
     const [pending, rejected, active] = await Promise.all([M.listByStatus(clubId, 'pending'), M.listByStatus(clubId, 'rejected'), M.listAllActive(clubId)]);
-    db.putMemberships([...pending.items, ...rejected.items, ...active]);
+    // başvuru notu private/contact'tadır (CD-137): bekleyenlerin notu tek tek okunur
+    db.putMemberships([...(await M.withNotes(pending.items)), ...rejected.items, ...active]);
     await users([...pending.items, ...rejected.items, ...active.filter((m) => m.decidedAt)]);
   });
 
@@ -123,7 +124,7 @@ export const mgtDashLoader = (clubId: string) =>
       P.getTodayCount(clubId).catch(() => 0),
       P.listForManagement(clubId, null, 100).catch(() => ({ items: [] as any[] })),
     ]);
-    db.putMemberships(pending.items); db.putEvents(evs.items);
+    db.putMemberships(await M.withNotes(pending.items.slice(0, 20))); db.putMemberships(pending.items.slice(20)); db.putEvents(evs.items);
     const club = db.clubs[clubId];
     const cur = club ? club.memberCount : 0;
     const delta = (a: { kind: string }) => (a.kind === 'member_left' || a.kind === 'member_removed' ? -1 : 1);
@@ -201,7 +202,7 @@ export const profileLoader = (otherId: string, ctxClubId?: string | null) =>
     const ctxM = ctxClubId ? found[clubIds.indexOf(ctxClubId)] : null;
     const myRole = ctxClubId ? session.s.memberships[ctxClubId] : null;
     const canMgmt = !!myRole && myRole.status === 'active' && ['board', 'president', 'advisor'].includes(myRole.role);
-    if (ctxClubId && ctxM && canMgmt) email = await M.readContact(ctxClubId, otherId);
+    if (ctxClubId && ctxM && canMgmt) email = (await M.readContact(ctxClubId, otherId))?.email || null;
     if (!email && session.s.isSuper) { const { getMyEmail } = await import('../data/repo/users'); email = await getMyEmail(otherId).catch(() => null); }
     db.setExtra('email:' + otherId, email);
   });
@@ -316,7 +317,9 @@ export const adminUsersLoader = (filter: string, q: string) =>
   L(`adm:users:${filter}:${q}`, async () => {
     const AD = await import('../data/repo/admin');
     const U = await import('../data/repo/users');
-    const term = trLowerQ(q.trim());
+    const raw = q.trim();
+    // e-posta `emailLower` alanında düz toLowerCase ile saklanır (Türkçe "I → ı" dönüşümü eşleşmeyi bozar)
+    const term = raw.includes('@') ? raw.toLowerCase() : trLowerQ(raw);
     let users: import('../data/models').User[];
     if (term.includes('@')) users = await U.findUserByEmail(term);
     else if (filter === 'suspended') users = await AD.listSuspendedUsers();

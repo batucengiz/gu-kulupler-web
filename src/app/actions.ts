@@ -48,7 +48,10 @@ export async function joinClub(clubId: string, note = ''): Promise<'joined' | 'a
   return 'applied';
 }
 export const cancelApplication = (clubId: string) => M.cancelApplication(clubId, uid());
-export const saveApplicationNote = (clubId: string, note: string) => M.updateApplicationNote(clubId, uid(), note);
+export async function saveApplicationNote(clubId: string, note: string) {
+  await M.updateApplicationNote(clubId, uid(), note);
+  const m = session.s.memberships[clubId]; if (m) session.patch({ memberships: { ...session.s.memberships, [clubId]: { ...m, note: note.trim() } } });
+}
 export async function leaveClub(clubId: string) { await M.leave(clubId, uid()); const c = db.clubs[clubId]; if (c) db.patchClub(clubId, { memberCount: Math.max(0, c.memberCount - 1) }); invalidateClub(clubId); }
 function patchMember(clubId: string, userId: string, patch: Partial<Membership>) {
   const id = ids.membership(clubId, userId); const m = db.memberships[id];
@@ -176,8 +179,9 @@ export async function joinEvent(eventId: string, reminder: R.Reminder) {
   const status = await R.joinEvent({ eventId, userId: uid(), reminder });
   const r = await R.getMyRsvp(eventId, uid()); session.setRsvp(eventId, r);
   try { db.putEvents([await E.getEvent(eventId, true)]); } catch { /* sessiz */ }
+  // Sıra katılımcıya sorgulanamaz (başkalarının kaydı okunamaz): katılım anında sıra = bekleyen sayısı
   let position = 0;
-  if (status === 'waitlist' && r?.waitlistAt) { position = await R.waitlistPosition(eventId, r.clubId, r.waitlistAt).catch(() => 1); db.setExtra('waitpos:' + eventId, position); }
+  if (status === 'waitlist') { position = Math.max(1, db.events[eventId]?.waitlistCount || 1); db.setExtra('waitpos:' + eventId, position); }
   return { status, position };
 }
 export async function leaveEvent(eventId: string) {
@@ -189,18 +193,17 @@ export async function setReminder(eventId: string, reminder: R.Reminder) {
   await R.setReminder(eventId, uid(), reminder);
   const r = session.s.rsvps[eventId]; if (r) session.setRsvp(eventId, { ...r, reminder });
 }
-export async function loadWaitPosition(eventId: string) {
-  const r = session.s.rsvps[eventId]; if (!r || r.status !== 'waitlist' || !r.waitlistAt) return;
-  db.setExtra('waitpos:' + eventId, await R.waitlistPosition(eventId, r.clubId, r.waitlistAt));
-}
 async function reloadEvent(eventId: string) { try { db.putEvents([await E.getEvent(eventId, true)]); } catch { /* sessiz */ } }
-export async function saveEvent(d: E.EventDraft, p: { clubId: string; eventId?: string | null; publish?: boolean; notify?: boolean; cover?: File | Blob | null; clearCover?: boolean }) {
+export async function saveEvent(d: E.EventDraft, p: { clubId: string; eventId?: string | null; publish?: boolean; notify?: boolean; cover?: File | Blob | null; clearCover?: boolean; onCreated?: (id: string) => void }) {
   const { prepareImage, upload, StoragePaths } = await import('../data/repo/storage');
+  // Kapak önce doğrulanır: geçersiz dosya yüzünden yarım kalmış taslak oluşmasın.
+  const cover = p.cover ? await prepareImage(p.cover) : null;
   let id = p.eventId || null;
   if (!id) {
     id = await E.createEvent(d, { clubId: p.clubId, createdBy: uid(), status: 'draft' });
+    p.onCreated?.(id); // sonraki adım başarısız olursa yeniden denemede aynı taslak güncellenir
   } else await E.updateEvent(id, d);
-  if (p.cover) { const path = await upload(StoragePaths.eventCover(id), await prepareImage(p.cover)); await E.setCoverPath(id, path); }
+  if (cover) { const path = await upload(StoragePaths.eventCover(id), cover, { clubId: p.clubId }); await E.setCoverPath(id, path); }
   else if (p.clearCover) await E.setCoverPath(id, null);
   if (p.publish) { await E.publish(id, uid()); }
   await reloadEvent(id);
@@ -228,7 +231,7 @@ export async function scanTicket(ev: ClubEvent, input: string) { const r = await
 function patchInbox(id: string, patch: Partial<AppNotification> | null) {
   session.patch({ inbox: patch === null ? session.s.inbox.filter((n) => n.id !== id) : session.s.inbox.map((n) => (n.id === id ? { ...n, ...patch } : n)) });
 }
-export async function markRead(n: AppNotification, read = true) { patchInbox(n.id, { read }); try { await N.markRead(n.id, read); } catch (e) { patchInbox(n.id, { read: n.read }); throw e; } }
+export async function markRead(n: AppNotification) { if (n.read) return; patchInbox(n.id, { read: true }); try { await N.markRead(n.id); } catch (e) { patchInbox(n.id, { read: n.read }); throw e; } }
 export async function markAllRead() { const ids = session.s.inbox.filter((n) => !n.read).map((n) => n.id); session.patch({ inbox: session.s.inbox.map((n) => ({ ...n, read: true })) }); await N.markAllRead(ids); }
 export async function deleteNotification(n: AppNotification) { patchInbox(n.id, null); await N.softDeleteNotification(n.id, uid()); }
 export async function restoreNotification(n: AppNotification) { await N.restoreNotification(n.id); }
@@ -245,14 +248,14 @@ export async function resolveReports(group: RP.ReportGroup, action: 'removed' | 
 /* ================= kulüp ================= */
 export type ClubSettingsPatch = Partial<Pick<Club, 'summary' | 'about' | 'conditions' | 'social' | 'approvalRequired' | 'applicationsOpen' | 'requireNote' | 'palette' | 'pattern' | 'coverSeed' | 'logoPath' | 'coverPath'>>;
 export async function updateClubSettings(clubId: string, patch: ClubSettingsPatch) {
-  const { writeBatch } = await import('firebase/firestore'); const { db: fdb } = await import('../lib/firebase'); const { addActivity } = await import('../data/repo/activity');
-  const b = writeBatch(fdb); b.update(ref(C.clubs, clubId), { ...patch, ...touch() }); addActivity(b, { clubId, actorId: uid(), kind: 'settings_changed' }); await b.commit();
+  const { writeBatch } = await import('firebase/firestore'); const { db: fdb } = await import('../lib/firebase'); const { addActivity, activityId } = await import('../data/repo/activity'); const { newEventKey } = await import('../data/repo/notifications');
+  const b = writeBatch(fdb); b.update(ref(C.clubs, clubId), { ...patch, ...touch() }); addActivity(b, { clubId, actorId: uid(), kind: 'settings_changed', id: activityId(clubId, uid(), 'settings_changed', newEventKey()) }); await b.commit();
   db.patchClub(clubId, patch);
 }
 export async function setApplicationsOpen(clubId: string, open: boolean) { await updateClubSettings(clubId, { applicationsOpen: open }); }
 export async function uploadClubImage(clubId: string, file: File, kind: 'logo' | 'cover') {
   const { prepareImage, upload, StoragePaths } = await import('../data/repo/storage');
-  const path = await upload(StoragePaths.club(clubId), await prepareImage(file, kind === 'logo' ? 512 : 1600));
+  const path = await upload(StoragePaths.club(clubId), await prepareImage(file, kind === 'logo' ? 512 : 1600), { clubId });
   await updateClubSettings(clubId, kind === 'logo' ? { logoPath: path } : { coverPath: path });
   return path;
 }

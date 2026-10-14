@@ -1,6 +1,6 @@
 /* StorageService + StoragePaths — istemcide sıkıştırma (≤1600 px, JPEG 0.82), < 5 MB, üzerine yazma yok. */
 import { ref as sref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage } from '../../lib/firebase';
+import { storage, auth } from '../../lib/firebase';
 import { AppError } from '../fs';
 import { LIMITS } from '../../lib/constants';
 import { newFileName } from '../../lib/util';
@@ -40,8 +40,16 @@ export async function prepareImage(file: File | Blob, maxSide = 1600): Promise<P
   if (!blob || blob.size >= LIMITS.imageMaxBytes) throw new AppError('sizeLimit');
   return { blob, w, h };
 }
-export async function upload(path: string, p: Prepared, metadata?: Record<string, string>): Promise<string> {
-  await uploadBytes(sref(storage, path), p.blob, { contentType: 'image/jpeg', customMetadata: metadata });
+/**
+ * Yükleme (üzerine yazma yok). Özel üst veri yola göre (Storage kuralları): `users/` hiç taşımaz;
+ * `posts/`, `events/`, `clubs/` `{clubId, uploaderId}`, `support/` `{uploaderId}` — `uploaderId` oturumdaki uid'dir.
+ */
+export async function upload(path: string, p: Prepared, metadata?: { clubId?: string }): Promise<string> {
+  const uploaderId = auth.currentUser?.uid;
+  const customMetadata: Record<string, string> | undefined = path.startsWith('users/') ? undefined
+    : path.startsWith('support/') ? { uploaderId: uploaderId! }
+    : { clubId: metadata?.clubId || '', uploaderId: uploaderId! };
+  await uploadBytes(sref(storage, path), p.blob, { contentType: 'image/jpeg', ...(customMetadata ? { customMetadata } : {}) });
   return path;
 }
 const urlCache = new Map<string, Promise<string>>();

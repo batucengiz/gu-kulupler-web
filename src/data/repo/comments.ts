@@ -2,27 +2,27 @@
 import { doc, collection, getDoc, onSnapshot, query, where, orderBy, writeBatch, increment } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { C, col, ref } from '../db';
-import { fromDoc, fromQuery, baseCreate, softDeletePayload, restorePayload, AppError } from '../fs';
+import { fromDoc, fromQuery, baseCreate, softDeletePayload, restorePayload, touch, AppError } from '../fs';
 import type { Comment } from '../models';
 
 export async function addComment(p: { postId: string; clubId: string; authorId: string; text: string }): Promise<string> {
   const r = doc(collection(db, C.comments));
   const b = writeBatch(db);
-  b.set(r, { postId: p.postId, clubId: p.clubId, authorId: p.authorId, text: p.text.trim(), isHidden: false, hiddenBy: null, hiddenAt: null, ...baseCreate() });
-  b.update(ref(C.posts, p.postId), { commentCount: increment(1), lastCommentRef: `comments/${r.id}` });
+  b.set(r, { postId: p.postId, clubId: p.clubId, authorId: p.authorId, text: p.text.trim(), isHidden: false, ...baseCreate() });
+  b.update(ref(C.posts, p.postId), { commentCount: increment(1), lastCommentRef: `comments/${r.id}`, ...touch() });
   await b.commit();
   return r.id;
 }
 export async function softDeleteComment(commentId: string, postId: string, actorId: string) {
   const b = writeBatch(db);
   b.update(ref(C.comments, commentId), softDeletePayload(actorId));
-  b.update(ref(C.posts, postId), { commentCount: increment(-1), lastCommentRef: `comments/${commentId}` });
+  b.update(ref(C.posts, postId), { commentCount: increment(-1), lastCommentRef: `comments/${commentId}`, ...touch() });
   await b.commit();
 }
 export async function restoreComment(commentId: string, postId: string) {
   const b = writeBatch(db);
   b.update(ref(C.comments, commentId), restorePayload());
-  b.update(ref(C.posts, postId), { commentCount: increment(1), lastCommentRef: `comments/${commentId}` });
+  b.update(ref(C.posts, postId), { commentCount: increment(1), lastCommentRef: `comments/${commentId}`, ...touch() });
   await b.commit();
 }
 export function watchComments(postId: string, clubId: string, cb: (list: Comment[]) => void, onErr?: (e: unknown) => void) {

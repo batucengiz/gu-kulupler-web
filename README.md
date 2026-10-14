@@ -51,7 +51,7 @@ Giriş ekranında **Demo hesaplar** bölümü belirir: öğrenci (Ayşe), üye (
 3. Authentication → Settings → **Authorized domains** listesine web adresini ekleyin.
 4. `npm run build` → `dist/` klasörü herhangi bir statik barındırmaya (Firebase Hosting, Netlify, Vercel) yüklenebilir. `firebase.json` içinde Hosting ayarı (SPA yönlendirmesi, önbellek ve güvenlik başlıkları) hazırdır.
 
-> ⚠️ **Güvenlik kuralları ve indeksler henüz yayına alınmadı.** `firebase/firestore.rules`, `firebase/storage.rules` ve `firebase/firestore.indexes.json` yalnızca emülatörde test edildi. Gerçek projeye yüklemeden önce Flutter deposundaki `firebase/` dosyalarıyla **birleştirilmeleri** gerekir (iki istemci aynı kuralları paylaşır). Yükleme komutu: `firebase deploy --only firestore:rules,firestore:indexes,storage --project gu-kulupler` — ekip onayı olmadan çalıştırmayın.
+> ⚠️ **Güvenlik kuralları henüz yayına alınmadı.** `firebase/firestore.rules` ve `firebase/storage.rules`, Flutter deposundaki kuralların (T-29) birebir kopyasıdır; üzerine yalnızca `WEB-EK` işaretli yönetim / süper admin dalları eklenmiştir (Flutter'da henüz yazılmamış T-30 / T-37). `firebase/firestore.indexes.json` iki deponun indekslerinin birleşimidir. Yayın adımları ve Flutter ekibine notlar: [YAYIN.md](YAYIN.md). Yükleme komutu: `firebase deploy --only firestore:rules,firestore:indexes,storage --project gu-kulupler` — ekip onayı olmadan çalıştırmayın.
 
 ## Komutlar
 
@@ -62,7 +62,7 @@ Giriş ekranında **Demo hesaplar** bölümü belirir: öğrenci (Ayşe), üye (
 | `npm run build` | Tür denetimi + üretim derlemesi (`dist/`) |
 | `npm run typecheck` | Yalnız TypeScript denetimi |
 | `npm test` | Birim testleri (Vitest) |
-| `npm run test:rules` | Güvenlik kuralı testleri (136 test; emülatör açık olmalı) |
+| `npm run test:rules` | Web'e özgü (`WEB-EK`) kural dallarının testleri (45 test; emülatör açık ve `npm run seed` ile demo verisi yüklenmiş olmalı). Ortak dalların ~4300 testi Flutter deposundadır ve bu kural dosyasına karşı da geçer. |
 | `npm run e2e` | Uçtan uca tarayıcı testleri (21 senaryo; emülatör + `dev:emu` açık olmalı) |
 | `npm run e2e -- --reset` | Önce emülatörü temizleyip demo verisini yeniden yükler |
 | `npm run e2e -- --only=yönetim` | Adında "yönetim" geçen senaryolar |
@@ -71,7 +71,7 @@ Giriş ekranında **Demo hesaplar** bölümü belirir: öğrenci (Ayşe), üye (
 
 ## Testler
 
-**Güvenlik kuralı testleri** (`firebase/test/rules.test.mjs`) her rolün (öğrenci, üye, yönetim kurulu, başkan, danışman, süper yönetici, doğrulanmamış hesap, üniversite dışı e-posta) her koleksiyonda yapabildiklerini ve yapamadıklarını sınar: üyelik geçişleri (M1–M14), sayaçların yalnızca eşlik eden belgeyle ±1 değişmesi, beğeni / oy / yorum hileleri, kontenjan, yoklama zaman penceresi, günlük duyuru sınırı, bildirim yetkisi, dosya yükleme kuralları.
+**Güvenlik kuralı testleri** (`firebase/test/rules.test.mjs`) web'in eklediği dalları sınar: yönetici üyelik geçişleri (onay, red, çıkarma, rol, devir, 30 sn geri alma) ve `memberCount` işaretçisi (`clubs/{id}/private/counter`), kulüp ayarları, süper admin kulüp oluşturma / askı / başkan atama, kullanıcı askısı (gerekçe `private/account`'ta), şikayet çözümü, yönetim bildirim ve günlüklerinin olaya bağlı olması, kulüp görseli yükleme.
 
 **Uçtan uca testler** (`e2e/run.mjs`) gerçek tarayıcıda, güvenlik kuralları açıkken çalışır:
 

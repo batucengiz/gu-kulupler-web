@@ -54,7 +54,7 @@ export const LIMITS = {
   upcomingEventsFetchMax: 200,
   notificationInboxLimit: 100,
   unreadBadgeMax: 9,
-  notificationFanOutChunkSize: 50,
+  notificationFanOutChunkSize: 225,
   eventNewInterestFanOutMax: 200,
   accountDeletionChunk: 5,
   undoToastMs: 6000,

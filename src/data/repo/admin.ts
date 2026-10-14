@@ -1,12 +1,12 @@
 /* AdminRepository — süper admin işlemleri (T-37). */
-import { doc, collection, getDocs, query, where, writeBatch, updateDoc, runTransaction, increment, getCountFromServer } from 'firebase/firestore';
+import { doc, collection, getDocs, query, where, writeBatch, updateDoc, runTransaction, increment, getCountFromServer, type Transaction, type WriteBatch } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { C, col, ref, ids, contactRef } from '../db';
+import { C, col, ref, ids, contactRef, accountRef, clubCounterRef } from '../db';
 import { fromDoc, fromQuery, baseCreate, touch, now, AppError } from '../fs';
 import type { Club, Membership, User, Advisor } from '../models';
 import { applicantOf } from './memberships';
-import { addActivity } from './activity';
-import { addNotification } from './notifications';
+import { addActivity, activityId } from './activity';
+import { addNotification, newEventKey } from './notifications';
 import { isNameTaken } from './clubs';
 import { trLower } from '../../lib/util';
 
@@ -14,25 +14,35 @@ export interface ClubCreateInput {
   name: string; categoryId: string; iconName: string; founded: number; summary: string; about: string;
   palette: string; pattern: string; approvalRequired: boolean;
 }
+/** Süper admin günlüğü / bildirimi — olay başına rastgele anahtar (yönetici geçişleriyle aynı). */
+const adminActivity = (w: Transaction | WriteBatch, clubId: string, actorId: string, kind: string, refs: Record<string, string>) =>
+  addActivity(w, { clubId, actorId, kind, refs, id: activityId(clubId, actorId, kind, newEventKey()) });
+/** Süper adminin oluşturduğu `active` üyelik: null alanların anahtarı yazılmaz (W-51), not üyelikte durmaz. */
+const newMembership = (clubId: string, u: User, role: 'president' | 'advisor') =>
+  ({ clubId, userId: u.id, status: 'active', role, applicant: applicantOf(u), appliedAt: now(), priorCount: 0, ...baseCreate() });
+const reactivated = (u: User, role: 'president' | 'advisor', priorCount: number) =>
+  ({ status: 'active', role, applicant: applicantOf(u), appliedAt: now(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null, priorCount, ...touch() });
+const newContact = (email: string) => ({ email, emailLower: email.toLowerCase(), note: '', ...baseCreate() });
+
 /** ADM-03: kulüp + başkan üyeliği (+ danışman üyeliği) tek batch. */
 export async function createClub(input: ClubCreateInput, p: { president: User; presidentEmail: string; advisor?: Advisor | null; advisorUser?: User | null; advisorEmail?: string | null }): Promise<string> {
   const nameLower = trLower(input.name.trim());
   if (await isNameTaken(nameLower)) throw new AppError('nameTaken');
   const r = doc(collection(db, C.clubs)); const clubId = r.id; const pid = p.president.id;
+  const advisorUserId = p.advisorUser && p.advisorUser.id !== pid ? p.advisorUser.id : null;
   const b = writeBatch(db);
   b.set(r, {
     name: input.name.trim(), nameLower, categoryId: input.categoryId, iconName: input.iconName, palette: input.palette, pattern: input.pattern,
-    coverSeed: `club-${clubId}`, logoPath: null, coverPath: null, memberCount: 1, approvalRequired: input.approvalRequired, applicationsOpen: true, requireNote: false,
+    coverSeed: `club-${clubId}`, memberCount: 1, approvalRequired: input.approvalRequired, applicationsOpen: true, requireNote: false,
     founded: input.founded, summary: input.summary.trim(), about: input.about.trim(), conditions: [], social: { email: null, instagram: null, web: null },
-    presidentId: pid, pinnedPostId: null, advisor: p.advisor ? { name: p.advisor.name, title: p.advisor.title, userId: p.advisorUser?.id ?? null } : null,
-    status: 'active', suspendReason: null, lastMembershipRef: `memberships/${ids.membership(clubId, pid)}`, ...baseCreate(),
+    presidentId: pid, advisor: p.advisor ? { name: p.advisor.name, title: p.advisor.title, userId: advisorUserId } : null,
+    status: 'active', ...baseCreate(),
   });
-  const mem = (u: User, role: string) => ({ clubId, userId: u.id, status: 'active', role, note: '', applicant: applicantOf(u), appliedAt: now(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null, priorCount: 0, ...baseCreate() });
-  b.set(ref(C.memberships, ids.membership(clubId, pid)), mem(p.president, 'president'));
-  b.set(contactRef(ids.membership(clubId, pid)), { email: p.presidentEmail, emailLower: p.presidentEmail.toLowerCase(), ...baseCreate() });
-  if (p.advisorUser && p.advisorUser.id !== pid) {
-    b.set(ref(C.memberships, ids.membership(clubId, p.advisorUser.id)), mem(p.advisorUser, 'advisor'));
-    if (p.advisorEmail) b.set(contactRef(ids.membership(clubId, p.advisorUser.id)), { email: p.advisorEmail, emailLower: p.advisorEmail.toLowerCase(), ...baseCreate() });
+  b.set(ref(C.memberships, ids.membership(clubId, pid)), newMembership(clubId, p.president, 'president'));
+  b.set(contactRef(ids.membership(clubId, pid)), newContact(p.presidentEmail));
+  if (p.advisorUser && advisorUserId) {
+    b.set(ref(C.memberships, ids.membership(clubId, advisorUserId)), newMembership(clubId, p.advisorUser, 'advisor'));
+    if (p.advisorEmail) b.set(contactRef(ids.membership(clubId, advisorUserId)), newContact(p.advisorEmail));
   }
   await b.commit();
   return clubId;
@@ -45,10 +55,21 @@ export async function updateClubIdentity(clubId: string, patch: ClubIdentityPatc
 }
 export const suspendClub = (clubId: string, reason: string) => updateDoc(ref(C.clubs, clubId), { status: 'suspended', suspendReason: reason.trim(), ...touch() });
 export const activateClub = (clubId: string) => updateDoc(ref(C.clubs, clubId), { status: 'active', suspendReason: null, ...touch() });
-export const suspendUser = (uid: string, reason: string) => updateDoc(ref(C.users, uid), { status: 'suspended', suspendReason: reason.trim(), ...touch() });
-export const activateUser = (uid: string) => updateDoc(ref(C.users, uid), { status: 'active', suspendReason: null, ...touch() });
+/** Kullanıcı askısı: durum `users`'ta, gerekçe `users/{uid}/private/account.suspendReason`'da (CD-133) — tek batch. */
+export async function suspendUser(uid: string, reason: string) {
+  const b = writeBatch(db);
+  b.update(ref(C.users, uid), { status: 'suspended', ...touch() });
+  b.update(accountRef(uid), { suspendReason: reason.trim(), ...touch() });
+  await b.commit();
+}
+export async function activateUser(uid: string) {
+  const b = writeBatch(db);
+  b.update(ref(C.users, uid), { status: 'active', ...touch() });
+  b.update(accountRef(uid), { suspendReason: null, ...touch() });
+  await b.commit();
+}
 
-/** M11 (süper) — hedef üye değilse aynı işlemde active/member üyelik oluşturulur (+1). */
+/** M11 (süper) — hedef üye değilse aynı işlemde active üyelik oluşturulur (+1, işaretçi yan belgede). */
 export async function assignPresident(p: { clubId: string; toUser: User; toEmail?: string | null; actorId: string }) {
   const { clubId, toUser } = p; const to = toUser.id;
   await runTransaction(db, async (tx) => {
@@ -60,17 +81,19 @@ export async function assignPresident(p: { clubId: string; toUser: User; toEmail
     const toM = fromDoc<Membership>(await tx.get(ref(C.memberships, ids.membership(clubId, to))));
     if (toM && toM.status === 'active' && toM.role === 'advisor') throw new AppError('advisorCannotBePresident');
     const toActive = !!toM && toM.status === 'active';
-    if (fromM && fromM.status === 'active' && fromM.role === 'president') tx.update(ref(C.memberships, ids.membership(clubId, from)), { role: 'board', ...touch() });
+    const fromActive = !!fromM && fromM.status === 'active' && fromM.role === 'president';
+    if (fromActive) tx.update(ref(C.memberships, ids.membership(clubId, from!)), { role: 'board', ...touch() });
     if (toActive) tx.update(ref(C.memberships, ids.membership(clubId, to)), { role: 'president', ...touch() });
-    else if (toM) tx.update(ref(C.memberships, ids.membership(clubId, to)), { status: 'active', role: 'president', applicant: applicantOf(toUser), appliedAt: now(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null, priorCount: (toM.priorCount || 0) + 1, ...touch() });
+    else if (toM) tx.update(ref(C.memberships, ids.membership(clubId, to)), reactivated(toUser, 'president', (toM.priorCount || 0) + 1));
     else {
-      tx.set(ref(C.memberships, ids.membership(clubId, to)), { clubId, userId: to, status: 'active', role: 'president', note: '', applicant: applicantOf(toUser), appliedAt: now(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null, priorCount: 0, ...baseCreate() });
-      if (p.toEmail) tx.set(contactRef(ids.membership(clubId, to)), { email: p.toEmail, emailLower: p.toEmail.toLowerCase(), ...baseCreate() });
+      tx.set(ref(C.memberships, ids.membership(clubId, to)), newMembership(clubId, toUser, 'president'));
+      if (p.toEmail) tx.set(contactRef(ids.membership(clubId, to)), newContact(p.toEmail));
     }
-    tx.update(ref(C.clubs, clubId), { presidentId: to, ...(toActive ? {} : { memberCount: increment(1), lastMembershipRef: `memberships/${ids.membership(clubId, to)}` }), ...touch() });
-    addActivity(tx, { clubId, actorId: p.actorId, kind: 'role_changed', refs: { userId: to, role: 'president' } });
+    tx.update(ref(C.clubs, clubId), { presidentId: to, ...(toActive ? {} : { memberCount: increment(1) }), ...touch() });
+    if (!toActive) tx.set(clubCounterRef(clubId), { clubId, lastMembershipRef: `memberships/${ids.membership(clubId, to)}`, updatedAt: now() });
+    adminActivity(tx, clubId, p.actorId, 'role_changed', { userId: to, role: 'president' });
     addNotification(tx, { type: 'role_changed', refs: { clubId, role: 'president' } }, to);
-    if (fromM && fromM.status === 'active') addNotification(tx, { type: 'role_changed', refs: { clubId, role: 'board' } }, from);
+    if (fromActive) addNotification(tx, { type: 'role_changed', refs: { clubId, role: 'board' } }, from!);
   });
 }
 /** M13 — danışman ata/kaldır (memberCount değişmez). */
@@ -84,11 +107,10 @@ export async function setAdvisor(p: { clubId: string; advisor: Advisor | null; u
     if (newM && newM.status === 'active' && newM.role !== 'advisor') throw new AppError('alreadyMember');
     if (oldM && oldId !== newId && oldM.status === 'active' && oldM.role === 'advisor') tx.update(ref(C.memberships, ids.membership(p.clubId, oldId!)), { status: 'left', ...touch() });
     if (newId && newId !== oldId && p.user) {
-      const data = { status: 'active', role: 'advisor', note: '', applicant: applicantOf(p.user), appliedAt: now(), decidedAt: null, decidedBy: null, retryAfter: null, rejectReason: null, rejectNote: null };
-      if (newM) tx.update(ref(C.memberships, ids.membership(p.clubId, newId)), { ...data, priorCount: (newM.priorCount || 0) + 1, ...touch() });
+      if (newM) tx.update(ref(C.memberships, ids.membership(p.clubId, newId)), reactivated(p.user, 'advisor', (newM.priorCount || 0) + 1));
       else {
-        tx.set(ref(C.memberships, ids.membership(p.clubId, newId)), { clubId: p.clubId, userId: newId, ...data, priorCount: 0, ...baseCreate() });
-        if (p.email) tx.set(contactRef(ids.membership(p.clubId, newId)), { email: p.email, emailLower: p.email.toLowerCase(), ...baseCreate() });
+        tx.set(ref(C.memberships, ids.membership(p.clubId, newId)), newMembership(p.clubId, p.user, 'advisor'));
+        if (p.email) tx.set(contactRef(ids.membership(p.clubId, newId)), newContact(p.email));
       }
     }
     tx.update(ref(C.clubs, p.clubId), { advisor: p.advisor ? { name: p.advisor.name, title: p.advisor.title, userId: newId } : null, ...touch() });

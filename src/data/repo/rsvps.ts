@@ -1,5 +1,5 @@
 /* RsvpRepository + AttendanceRepository — sayaç eşliği lastRsvpRef (CD-41); yoklama K-G penceresi. */
-import { getDoc, getDocs, onSnapshot, query, where, orderBy, limit, runTransaction, increment, updateDoc, getCountFromServer, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, runTransaction, increment, updateDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { C, col, ref, ids } from '../db';
 import { fromDoc, fromQuery, baseCreate, touch, now, AppError } from '../fs';
@@ -13,33 +13,37 @@ const rPath = (e: string, u: string) => `rsvps/${ids.rsvp(e, u)}`;
 const eRef = (e: string) => ref(C.events, e);
 export type Reminder = 'none' | '15m' | '1h' | '1d';
 
-/** Tx: going (kontenjan varsa) ya da waitlist; iptal edilmiş kayıtta aynı ticketCode. */
+/**
+ * Tx: going (yer varsa ve önde bekleyen yoksa) ya da waitlist; vazgeçilmiş kayıt aynı belge ve aynı bilet koduyla
+ * güncellenir. Etkinliğe kayıt yolu yazılmaz (W-64): yalnızca sayaç + updatedAt.
+ */
 export async function joinEvent(p: { eventId: string; userId: string; reminder: Reminder }): Promise<RsvpStatus> {
   let result: RsvpStatus = 'going';
   await runTransaction(db, async (tx) => {
     const e = fromDoc<ClubEvent>(await tx.get(eRef(p.eventId)));
+    const prev = fromDoc<Rsvp>(await tx.get(rRef(p.eventId, p.userId)));
     if (!e || e.isDeleted || e.status === 'draft') throw new AppError('notFound');
     if (e.status === 'cancelled') throw new AppError('eventCancelled');
     if (e.endsAt <= Date.now()) throw new AppError('eventEnded');
     if (!e.registrationOpen) throw new AppError('registrationClosed');
-    const prev = fromDoc<Rsvp>(await tx.get(rRef(p.eventId, p.userId)));
     if (prev && prev.status !== 'cancelled') throw new AppError('conflict');
-    const going = e.capacity == null || e.goingCount < e.capacity;
+    const going = e.capacity == null || (e.goingCount < e.capacity && (e.waitlistCount || 0) === 0);
     result = going ? 'going' : 'waitlist';
-    const data = { status: result, reminder: p.reminder, waitlistAt: going ? null : now(), scannedAt: null, scannedBy: null };
-    if (prev) tx.update(rRef(p.eventId, p.userId), { ...data, ...touch() });
-    else tx.set(rRef(p.eventId, p.userId), { eventId: p.eventId, clubId: e.clubId, userId: p.userId, ticketCode: ticketCode(), ...data, ...baseCreate() });
-    tx.update(eRef(p.eventId), { [going ? 'goingCount' : 'waitlistCount']: increment(1), lastRsvpRef: rPath(p.eventId, p.userId), ...touch() });
+    if (prev) tx.update(rRef(p.eventId, p.userId), { status: result, reminder: p.reminder, waitlistAt: going ? null : now(), ...touch() });
+    else tx.set(rRef(p.eventId, p.userId), { eventId: p.eventId, clubId: e.clubId, userId: p.userId, status: result, reminder: p.reminder, ticketCode: ticketCode(), ...(going ? {} : { waitlistAt: now() }), ...baseCreate() });
+    tx.update(eRef(p.eventId), { [going ? 'goingCount' : 'waitlistCount']: increment(1), ...touch() });
   });
   return result;
 }
-/** Tx: going|waitlist → cancelled (otomatik terfi yok, Mod C). */
+/** Tx: going|waitlist → cancelled (yalnızca status; otomatik terfi yok, Mod C). */
 export async function cancelRsvp(eventId: string, userId: string) {
   await runTransaction(db, async (tx) => {
     const r = fromDoc<Rsvp>(await tx.get(rRef(eventId, userId)));
+    const e = fromDoc<ClubEvent>(await tx.get(eRef(eventId)));
     if (!r || (r.status !== 'going' && r.status !== 'waitlist')) throw new AppError(r?.status === 'attended' ? 'alreadyAttended' : 'conflict');
-    tx.update(rRef(eventId, userId), { status: 'cancelled', waitlistAt: null, ...touch() });
-    tx.update(eRef(eventId), { [r.status === 'going' ? 'goingCount' : 'waitlistCount']: increment(-1), lastRsvpRef: rPath(eventId, userId), ...touch() });
+    if (e && e.endsAt <= Date.now()) throw new AppError('eventEnded');
+    tx.update(rRef(eventId, userId), { status: 'cancelled', ...touch() });
+    tx.update(eRef(eventId), { [r.status === 'going' ? 'goingCount' : 'waitlistCount']: increment(-1), ...touch() });
   });
 }
 export async function setReminder(eventId: string, userId: string, reminder: Reminder) {
@@ -56,11 +60,6 @@ export function watchMyRsvp(eventId: string, userId: string, cb: (r: Rsvp | null
 export async function listMyRsvps(userId: string): Promise<Rsvp[]> {
   return fromQuery<Rsvp>(await getDocs(query(col(C.rsvps), where('userId', '==', userId), where('isDeleted', '==', false), orderBy('createdAt', 'desc'), limit(500))));
 }
-export async function waitlistPosition(eventId: string, clubId: string, waitlistAt: number): Promise<number> {
-  const s = await getCountFromServer(query(col(C.rsvps), where('eventId', '==', eventId), where('clubId', '==', clubId), where('status', '==', 'waitlist'), where('waitlistAt', '<', Timestamp.fromMillis(waitlistAt))));
-  return s.data().count + 1;
-}
-
 /* ---------- yoklama (yönetici) ---------- */
 export const attendanceWindowOpen = (e: Pick<ClubEvent, 'startsAt' | 'endsAt'>, t = Date.now()) =>
   t >= e.startsAt - LIMITS.attendanceWindowBeforeMs && t <= e.endsAt + LIMITS.attendanceWindowAfterMs;
@@ -89,17 +88,21 @@ export async function scanTicket(p: { event: ClubEvent; input: string; actorId: 
   catch (e) { if (e instanceof AppError && e.code === 'conflict') return { outcome: 'alreadyScanned', rsvp: r }; throw e; }
   return { outcome: 'valid', rsvp: { ...r, status: 'attended' } };
 }
+/** Yönetici sayaç yazımlarının işaretçisi (W-64): etkinlik belgesinde değil, `events/{id}/private/counter` yan belgesinde. */
+const counterDoc = (eventId: string) => doc(db, C.events, eventId, 'private', 'counter');
+const counterPayload = (clubId: string, eventId: string, userId: string) => ({ clubId, lastRsvpRef: rPath(eventId, userId), updatedAt: now() });
 export async function markAttended(p: { eventId: string; userId: string; actorId: string; attended: boolean }) {
   await runTransaction(db, async (tx) => {
     const e = fromDoc<ClubEvent>(await tx.get(eRef(p.eventId)));
+    const r = fromDoc<Rsvp>(await tx.get(rRef(p.eventId, p.userId)));
     if (!e) throw new AppError('notFound');
     if (!attendanceWindowOpen(e)) throw new AppError('attendanceWindowClosed');
-    const r = fromDoc<Rsvp>(await tx.get(rRef(p.eventId, p.userId)));
     if (!r || r.status !== (p.attended ? 'going' : 'attended')) throw new AppError('conflict');
     tx.update(rRef(p.eventId, p.userId), p.attended
       ? { status: 'attended', scannedAt: now(), scannedBy: p.actorId, ...touch() }
       : { status: 'going', scannedAt: null, scannedBy: null, ...touch() });
-    tx.update(eRef(p.eventId), { attendedCount: increment(p.attended ? 1 : -1), lastRsvpRef: rPath(p.eventId, p.userId), ...touch() });
+    tx.update(eRef(p.eventId), { attendedCount: increment(p.attended ? 1 : -1), ...touch() });
+    tx.set(counterDoc(p.eventId), counterPayload(e.clubId, p.eventId, p.userId));
   });
 }
 /** DLG-17: her rsvp ayrı Tx, sıralı; attended olanlar atlanır (idempotent). */
@@ -108,21 +111,23 @@ export async function markAllAttended(p: { eventId: string; clubId: string; acto
   const r = { succeeded: 0, conflicted: 0, failed: 0 };
   for (let i = 0; i < going.length; i++) {
     try { await markAttended({ eventId: p.eventId, userId: going[i].userId, actorId: p.actorId, attended: true }); r.succeeded++; }
-    catch (e) { if (e instanceof AppError && e.code === 'conflict') r.conflicted++; else r.failed++; }
+    catch (e) { if (e instanceof AppError && e.code === 'attendanceWindowClosed') throw e; if (e instanceof AppError && e.code === 'conflict') r.conflicted++; else r.failed++; }
     p.onProgress?.(i + 1, going.length);
   }
   return r;
 }
-/** Tx: waitlist → going (ikili delta) + waitlist_promoted (aynı batch). */
+/** Tx: waitlist → going (yalnızca status; waitlistAt kalır) + sayaç (+1,−1) + yan belge işaretçisi + waitlist_promoted (aynı işlem). */
 export async function promote(eventId: string, userId: string) {
   await runTransaction(db, async (tx) => {
     const e = fromDoc<ClubEvent>(await tx.get(eRef(eventId)));
-    if (!e || e.status !== 'published') throw new AppError('conflict');
-    if (e.capacity != null && e.goingCount >= e.capacity) throw new AppError('capacityFull');
     const r = fromDoc<Rsvp>(await tx.get(rRef(eventId, userId)));
+    if (!e || e.status !== 'published' || e.isDeleted) throw new AppError('conflict');
+    if (e.endsAt <= Date.now()) throw new AppError('eventEnded');
+    if (e.capacity != null && e.goingCount >= e.capacity) throw new AppError('capacityFull');
     if (!r || r.status !== 'waitlist') throw new AppError('conflict');
-    tx.update(rRef(eventId, userId), { status: 'going', waitlistAt: null, ...touch() });
-    tx.update(eRef(eventId), { goingCount: increment(1), waitlistCount: increment(-1), lastRsvpRef: rPath(eventId, userId), ...touch() });
+    tx.update(rRef(eventId, userId), { status: 'going', ...touch() });
+    tx.update(eRef(eventId), { goingCount: increment(1), waitlistCount: increment(-1), ...touch() });
+    tx.set(counterDoc(eventId), counterPayload(e.clubId, eventId, userId));
     addNotification(tx, { type: 'waitlist_promoted', refs: { clubId: e.clubId, eventId } }, userId);
   });
 }

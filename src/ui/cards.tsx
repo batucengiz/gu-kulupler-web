@@ -955,7 +955,8 @@ function NotificationRow({ n, screen = 'NTF-01' }: any) {
       )
       .catch(handleError);
   };
-  const toggleRead = () => A.markRead(n, !n.read).catch(handleError);
+  // okunmamışa dönüş yoktur (kural yalnızca read: true kabul eder)
+  const toggleRead = () => A.markRead(n).catch(handleError);
   const onDown = (e) => {
     if (e.button && e.button !== 0) return;
     start.current = e.clientX;
@@ -980,7 +981,7 @@ function NotificationRow({ n, screen = 'NTF-01' }: any) {
     if (dx < -90) {
       setDx(0);
       del();
-    } else if (dx > 90) {
+    } else if (dx > 90 && !n.read) {
       setDx(0);
       toggleRead();
     } else setDx(0);
@@ -994,13 +995,13 @@ function NotificationRow({ n, screen = 'NTF-01' }: any) {
     <div className="notif-row">
       <div className="notif-under">
         <span
-          className={cx('row gap6', dx > 0 ? '' : 'hidden-vis')}
+          className={cx('row gap6', dx > 0 && !n.read ? '' : 'hidden-vis')}
           style={{
             color: 'var(--state-info)',
           }}
         >
-          <Icon name={n.read ? 'bell-ring' : 'check'} size={18} />
-          {n.read ? t('notif.markUnread') : t('notif.markRead')}
+          <Icon name="check" size={18} />
+          {t('notif.markRead')}
         </span>
         <span
           className={cx('row gap6', dx < 0 ? '' : 'hidden-vis')}
@@ -1059,15 +1060,17 @@ function NotificationRow({ n, screen = 'NTF-01' }: any) {
       </div>
       {menu ? (
         <PopMenu id={screen} onClose={() => setMenu(false)}>
-          <Tile
-            title={n.read ? t('notif.markUnread') : t('notif.markRead')}
-            leading={<Icon name="check" size={20} />}
-            action={`${screen}.menu.${n.id}.read`}
-            onClick={() => {
-              setMenu(false);
-              toggleRead();
-            }}
-          />
+          {!n.read ? (
+            <Tile
+              title={t('notif.markRead')}
+              leading={<Icon name="check" size={20} />}
+              action={`${screen}.menu.${n.id}.read`}
+              onClick={() => {
+                setMenu(false);
+                toggleRead();
+              }}
+            />
+          ) : null}
           <Tile
             title={t('common.delete')}
             leading={<Icon name="trash-2" size={20} />}

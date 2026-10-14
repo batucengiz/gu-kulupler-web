@@ -1,6 +1,6 @@
 import { getDoc, getDocs, setDoc, query, where, orderBy, limit, startAfter, writeBatch, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { C, col, ref, ids, type Page } from '../db';
+import { C, col, ref, ids, accountRef, type Page } from '../db';
 import { fromQuery, fromDoc, baseCreate, now, AppError, touch } from '../fs';
 import type { Report } from '../models';
 import { addNotification } from './notifications';
@@ -15,7 +15,8 @@ export async function report(reporterId: string, target: ReportTarget, reason: s
     if (s.exists()) throw new AppError('alreadyExists');
   } catch (e) { if (e instanceof AppError) throw e; /* okunamadıysa create dener */ }
   try {
-    await setDoc(r, { targetType: target.type, targetId: target.id, targetClubId: target.clubId || null, reporterId, reason, note: note.trim(), status: 'open', action: null, resolvedAt: null, resolvedBy: null, ...baseCreate() });
+    // null alanların anahtarı yazılmaz (W-51): kullanıcı hedefinde targetClubId yok; karar alanları yok
+    await setDoc(r, { targetType: target.type, targetId: target.id, ...(target.type !== 'user' && target.clubId ? { targetClubId: target.clubId } : {}), reporterId, reason, note: note.trim(), status: 'open', ...baseCreate() });
   } catch (e) {
     if ((e as { code?: string }).code === 'permission-denied') throw new AppError('alreadyExists');
     throw e;
@@ -50,7 +51,8 @@ export async function resolveReports(group: ReportGroup, action: 'removed' | 'di
   if (action === 'removed' && (group.targetType === 'post' || group.targetType === 'comment')) {
     extra.push((b) => b.update(ref(group.targetType === 'post' ? C.posts : C.comments, group.targetId), { isHidden: true, hiddenBy: actorId, hiddenAt: now(), ...touch() }));
   }
-  if (action === 'suspended' && group.targetType === 'user') extra.push((b) => b.update(ref(C.users, group.targetId), { status: 'suspended', suspendReason: 'report', ...touch() }));
+  // askı gerekçesi kullanıcı belgesinde değil private/account'tadır (CD-133)
+  if (action === 'suspended' && group.targetType === 'user') extra.push((b) => { b.update(ref(C.users, group.targetId), { status: 'suspended', ...touch() }); b.update(accountRef(group.targetId), { suspendReason: 'report', ...touch() }); });
   if (action === 'suspended' && group.targetType === 'club') extra.push((b) => b.update(ref(C.clubs, group.targetId), { status: 'suspended', suspendReason: 'report', ...touch() }));
   const parts = chunk(open, Math.floor((LIMITS.batchMaxWrites - extra.length) / 2));
   for (let i = 0; i < parts.length; i++) {

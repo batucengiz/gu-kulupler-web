@@ -1,10 +1,10 @@
 /* PostRepository + AnnouncementCounterRepository — PLAN §10.4 (T-19). */
-import { doc, collection, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, startAfter, writeBatch, updateDoc, setDoc, arrayUnion, arrayRemove, increment, getCountFromServer, Timestamp, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
+import { doc, collection, getDoc, getDocs, onSnapshot, query, where, orderBy, limit, startAfter, runTransaction, updateDoc, setDoc, arrayUnion, arrayRemove, increment, getCountFromServer, Timestamp, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { C, col, ref, ids, type Page } from '../db';
 import { fromDoc, fromQuery, baseCreate, touch, now, softDeletePayload, restorePayload, AppError, errCode } from '../fs';
 import type { Post, PostImage, PostType, Club } from '../models';
-import { addActivity } from './activity';
+import { addActivity, activityId } from './activity';
 import { fanOut } from './notifications';
 import { listAllActive } from './memberships';
 import { LIMITS } from '../../lib/constants';
@@ -39,40 +39,44 @@ export const remainingToday = async (clubId: string) => Math.max(0, LIMITS.annou
 
 /* ---------- oluştur / düzenle ---------- */
 function buildPost(draft: PostDraft, authorId: string, clubId: string) {
-  const poll = draft.type === 'poll' && draft.poll ? {
+  // null alanların anahtarı yazılmaz (W-51): title yalnızca duyuruda, poll yalnızca ankette
+  const data: Record<string, unknown> = { clubId, authorId, type: draft.type };
+  if (draft.type === 'announcement') data.title = (draft.title || '').trim();
+  data.text = draft.text.trim();
+  data.images = draft.images;
+  if (draft.type === 'poll' && draft.poll) data.poll = {
     options: draft.poll.options.map((text, i) => ({ id: `o${i + 1}`, text: text.trim() })),
     endsAt: Timestamp.fromMillis(Date.now() + draft.poll.durationDays * DAY),
     showResultsAfterVote: draft.poll.showResultsAfterVote,
-  } : null;
-  return {
-    clubId, authorId, type: draft.type, title: draft.type === 'announcement' ? (draft.title || '').trim() || null : null,
-    text: draft.text.trim(), images: draft.images, poll, pinned: false, pushSent: !!draft.pushSent && draft.type === 'announcement',
-    likes: [], likeCount: 0, commentCount: 0, lastCommentRef: null, isHidden: false, hiddenBy: null, hiddenAt: null, editedAt: null, ...baseCreate(),
   };
+  Object.assign(data, { pinned: false, pushSent: !!draft.pushSent && draft.type === 'announcement', likes: [], likeCount: 0, commentCount: 0, isHidden: false, ...baseCreate() });
+  return data as { clubId: string; authorId: string; type: PostType; pushSent: boolean } & Record<string, unknown>;
 }
-async function commitCreate(postId: string, data: ReturnType<typeof buildPost>, day: { key: string; iso: string } | null, prevCount: number) {
-  const b = writeBatch(db);
-  b.set(postRef(postId), data);
-  const kind = data.type === 'post' ? 'post_created' : data.type;
-  addActivity(b, { clubId: data.clubId, actorId: data.authorId, kind, refs: { postId } });
-  if (day) {
-    if (prevCount >= LIMITS.announcementDailyLimit) throw new AppError('announcementLimit');
-    b.set(counterRef(data.clubId, day.key), { clubId: data.clubId, day: day.iso, count: prevCount + 1, lastPostRef: `posts/${postId}`, updatedAt: now() }, { merge: true });
-  }
-  await b.commit();
-}
-async function countFor(clubId: string, key: string) {
-  const s = await getDoc(counterRef(clubId, key)); return s.exists() ? (s.data().count as number) || 0 : 0;
+const activityKind = (type: PostType) => (type === 'post' ? 'post_created' : type);
+/** Tek işlem: (bildirimli duyuruda günün sayacı okunur, +1) + gönderi + günlük (sabit kimlik). */
+async function commitCreate(postId: string, data: ReturnType<typeof buildPost>, day: { key: string; iso: string } | null) {
+  await runTransaction(db, async (tx) => {
+    if (day) {
+      const s = await tx.get(counterRef(data.clubId, day.key));
+      const prevCount = s.exists() ? (s.data().count as number) || 0 : 0;
+      if (prevCount >= LIMITS.announcementDailyLimit) throw new AppError('announcementLimit');
+      tx.set(counterRef(data.clubId, day.key), { clubId: data.clubId, day: day.iso, count: prevCount + 1, lastPostRef: `posts/${postId}`, updatedAt: now() }, { merge: true });
+    }
+    tx.set(postRef(postId), data);
+    const kind = activityKind(data.type);
+    addActivity(tx, { clubId: data.clubId, actorId: data.authorId, kind, refs: { postId }, id: activityId(data.clubId, data.authorId, kind, postId) });
+  });
 }
 /** create + (duyuru+push ise) fan-out — ManagementRepository.publishPost. */
 export async function publishPost(draft: PostDraft, p: { clubId: string; authorId: string; postId: string; advisorUserId?: string | null }): Promise<string> {
   const data = buildPost(draft, p.authorId, p.clubId);
   if (data.pushSent) {
     const t = Date.now(); const day = istanbulDay(t);
-    try { await commitCreate(p.postId, data, day, await countFor(p.clubId, day.key)); }
+    try { await commitCreate(p.postId, data, day); }
     catch (e) {
+      // cihaz saati gün sınırına yakınsa komşu günle bir kez daha (CD-129)
       const adj = adjacentDay(t);
-      if (errCode(e) === 'permission-denied' && adj) await commitCreate(p.postId, data, adj, await countFor(p.clubId, adj.key));
+      if (errCode(e) === 'permission-denied' && adj) await commitCreate(p.postId, data, adj);
       else throw e;
     }
     try {
@@ -80,41 +84,46 @@ export async function publishPost(draft: PostDraft, p: { clubId: string; authorI
       await fanOut({ type: 'announcement', refs: { clubId: p.clubId, postId: p.postId } }, members.filter((u) => u !== p.advisorUserId), p.authorId);
     } catch (e) { console.warn('[fan-out] announcement', e); }
   } else {
-    await commitCreate(p.postId, data, null, 0);
+    await commitCreate(p.postId, data, null);
   }
   return p.postId;
 }
 export interface PostEditPatch { text: string; title?: string | null; images: PostImage[] }
+/** Yalnızca verilen alanlar + editedAt (başlık yalnızca duyuruda). */
 export async function updatePost(postId: string, patch: PostEditPatch) {
-  await updateDoc(postRef(postId), { text: patch.text.trim(), title: patch.title === undefined ? null : (patch.title || '').trim() || null, images: patch.images, editedAt: now(), ...touch() });
+  await updateDoc(postRef(postId), { text: patch.text.trim(), ...(patch.title !== undefined && patch.title !== null ? { title: patch.title.trim() } : {}), images: patch.images, editedAt: now(), ...touch() });
 }
-/** B: soft delete + sabitliyse kulüp pinnedPostId temizlenir. */
+/** Soft delete (tek işlem): sabitse aynı yazımda pinned false + kulüp pinnedPostId null. */
 export async function softDeletePost(postId: string, actorId: string, clubId: string) {
-  const b = writeBatch(db);
-  const club = fromDoc<Club>(await getDoc(ref(C.clubs, clubId)));
-  if (club?.pinnedPostId === postId) {
-    b.update(postRef(postId), { ...softDeletePayload(actorId), pinned: false });
-    b.update(ref(C.clubs, clubId), { pinnedPostId: null, ...touch() });
-  } else b.update(postRef(postId), softDeletePayload(actorId));
-  await b.commit();
+  await runTransaction(db, async (tx) => {
+    const post = fromDoc<Post>(await tx.get(postRef(postId)));
+    if (!post || post.isDeleted) throw new AppError('conflict');
+    if (post.pinned) {
+      tx.update(postRef(postId), { ...softDeletePayload(actorId), pinned: false });
+      tx.update(ref(C.clubs, clubId), { pinnedPostId: null, ...touch() });
+    } else tx.update(postRef(postId), softDeletePayload(actorId));
+  });
 }
 export const restorePost = (postId: string) => updateDoc(postRef(postId), restorePayload());
+/** Tek işlem: kulüp + gönderi (+ eski sabit) okunur; eski false, yeni true, işaretçi yeni gönderi. */
 export async function pin(postId: string, clubId: string) {
-  const club = fromDoc<Club>(await getDoc(ref(C.clubs, clubId)));
-  const b = writeBatch(db);
-  if (club?.pinnedPostId && club.pinnedPostId !== postId) {
-    const prev = await getDoc(postRef(club.pinnedPostId));
-    if (prev.exists()) b.update(postRef(club.pinnedPostId), { pinned: false, ...touch() });
-  }
-  b.update(postRef(postId), { pinned: true, ...touch() });
-  b.update(ref(C.clubs, clubId), { pinnedPostId: postId, ...touch() });
-  await b.commit();
+  await runTransaction(db, async (tx) => {
+    const club = fromDoc<Club>(await tx.get(ref(C.clubs, clubId)));
+    const post = fromDoc<Post>(await tx.get(postRef(postId)));
+    const prevId = club?.pinnedPostId && club.pinnedPostId !== postId ? club.pinnedPostId : null;
+    const prev = prevId ? await tx.get(postRef(prevId)) : null;
+    if (!post || post.isDeleted || post.isHidden) throw new AppError('conflict');
+    if (prev && prev.exists()) tx.update(postRef(prevId!), { pinned: false, ...touch() });
+    tx.update(postRef(postId), { pinned: true, ...touch() });
+    tx.update(ref(C.clubs, clubId), { pinnedPostId: postId, ...touch() });
+  });
 }
 export async function unpin(postId: string, clubId: string) {
-  const b = writeBatch(db);
-  b.update(postRef(postId), { pinned: false, ...touch() });
-  b.update(ref(C.clubs, clubId), { pinnedPostId: null, ...touch() });
-  await b.commit();
+  await runTransaction(db, async (tx) => {
+    const club = fromDoc<Club>(await tx.get(ref(C.clubs, clubId)));
+    tx.update(postRef(postId), { pinned: false, ...touch() });
+    if (club?.pinnedPostId === postId) tx.update(ref(C.clubs, clubId), { pinnedPostId: null, ...touch() });
+  });
 }
 /** Beğeni: updatedAt yazılmaz (CD-131). */
 export const like = (postId: string, uid: string) => updateDoc(postRef(postId), { likes: arrayUnion(uid), likeCount: increment(1) });

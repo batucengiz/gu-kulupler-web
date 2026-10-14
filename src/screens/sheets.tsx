@@ -1746,7 +1746,8 @@ SHEETS['SHT-19'] = {
     const [busy, run] = useBusy();
     useEffect(() => {
       // bildirimden açıldıysa başvuru belgesi henüz yüklenmemiş olabilir
-      if (!m) M.getMembership(props.clubId, props.userId).then((x) => x && db.putMemberships([x])).catch(() => {});
+      if (!m) M.getMembership(props.clubId, props.userId).then(async (x) => x && db.putMemberships(await M.withNotes([x]))).catch(() => {});
+      else if (m.note == null) void M.withNotes([m]).then((xs) => db.putMemberships(xs)).catch(() => {});
       // eslint-disable-next-line
     }, []);
     if (!m || !club)

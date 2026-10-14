@@ -61,11 +61,12 @@ export async function getUsers(uids: string[]): Promise<User[]> {
 /** UserRepository.createProfile — users + private/account + settings tek batch. */
 export async function createProfile(p: { uid: string; email: string; name: string; nameLower: string; avatarSeed: string }) {
   const b = writeBatch(db);
+  // null alanların anahtarı yazılmaz (W-51): avatarPath / department / year sonradan gelir
   b.set(ref(C.users, p.uid), {
-    name: p.name, nameLower: p.nameLower, avatarSeed: p.avatarSeed, avatarPath: null, department: null, year: null,
-    interests: [], bio: '', status: 'active', suspendReason: null, staff: false, profileComplete: false, ...baseCreate(),
+    name: p.name, nameLower: p.nameLower, avatarSeed: p.avatarSeed,
+    interests: [], bio: '', status: 'active', staff: false, profileComplete: false, ...baseCreate(),
   });
-  b.set(accountRef(p.uid), { email: p.email, emailLower: p.email.toLowerCase(), fcmTokens: [], lastLoginAt: null, ...baseCreate() });
+  b.set(accountRef(p.uid), { email: p.email, emailLower: p.email.toLowerCase(), fcmTokens: [], ...baseCreate() });
   b.set(ref(C.settings, p.uid), { ...DEFAULT_SETTINGS, updatedAt: now() });
   await b.commit();
 }
@@ -79,7 +80,7 @@ export async function touchLastLogin(uid: string) {
 }
 export async function ensureAccountDoc(uid: string, email: string) {
   const snap = await getDoc(accountRef(uid));
-  if (!snap.exists()) await setDoc(accountRef(uid), { email, emailLower: email.toLowerCase(), fcmTokens: [], lastLoginAt: null, ...baseCreate() });
+  if (!snap.exists()) await setDoc(accountRef(uid), { email, emailLower: email.toLowerCase(), fcmTokens: [], ...baseCreate() });
 }
 /** event_new ilgi eşleşmeli fan-out (CD-38). */
 export async function listByInterests(interestIds: string[], max: number = LIMITS.eventNewInterestFanOutMax): Promise<string[]> {

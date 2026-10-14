@@ -78,8 +78,8 @@ export const sel = {
   registered: (eventId: string) => sel.eventRsvps(eventId).filter((r) => r.status === 'going' || r.status === 'attended'),
   waitlist: (eventId: string) => sel.eventRsvps(eventId).filter((r) => r.status === 'waitlist').sort((a, b) => (a.waitlistAt || a.createdAt) - (b.waitlistAt || b.createdAt)),
   attended: (eventId: string) => sel.eventRsvps(eventId).filter((r) => r.status === 'attended'),
-  /** Kayıtlı sayısı = goingCount + attendedCount (sayaçlardan) */
-  registeredCount: (ev: ClubEvent) => (ev.goingCount || 0) + (ev.attendedCount || 0),
+  /** Kayıtlı sayısı = goingCount (yoklaması alınanlar going sayacında kalır; attendedCount onun alt kümesidir) */
+  registeredCount: (ev: ClubEvent) => ev.goingCount || 0,
   isFull: (ev: ClubEvent) => ev.capacity != null && sel.registeredCount(ev) >= ev.capacity,
   remaining: (ev: ClubEvent) => (ev.capacity == null ? Infinity : Math.max(0, ev.capacity - sel.registeredCount(ev))),
   myRsvp: (eventId: string, _u?: string | null): Rsvp | null => session.s.rsvps[eventId] || null,
